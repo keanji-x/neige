@@ -82,8 +82,8 @@ fn check_remote_neige(host: &str, port: u16) -> bool {
 fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
     println!("neige not detected on {host}:{port}, provisioning...");
 
-    // Check if cargo and node are available
-    let check_deps = "command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1";
+    // Check if cargo and node (20+) are available
+    let check_deps = r#"command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node -e "if(parseInt(process.version.slice(1))<20){console.error('Node.js 20+ required, got '+process.version);process.exit(1)}""#;
     let deps_ok = Command::new("ssh")
         .args([host, check_deps])
         .stdout(Stdio::null())
@@ -93,8 +93,8 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
         .unwrap_or(false);
 
     if !deps_ok {
-        eprintln!("Remote host is missing cargo, node, or npm. Cannot auto-provision.");
-        eprintln!("Please install Rust and Node.js on the remote host first.");
+        eprintln!("Remote host is missing cargo, node (20+), or npm. Cannot auto-provision.");
+        eprintln!("Please install Rust and Node.js 20+ on the remote host first.");
         return false;
     }
 
