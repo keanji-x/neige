@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
-const BUSY_IDLE_MS = 5000;
+const BUSY_ACTIVATE_MS = 2000;  // sustained output for 2s → go gray
+const BUSY_DEACTIVATE_MS = 1000; // 1s silence → clear gray
 
 export function useTerminal(containerId: string | null) {
   const termRef = useRef<Terminal | null>(null);
@@ -79,34 +80,38 @@ export function useTerminal(containerId: string | null) {
     let writeBuf: Uint8Array[] = [];
     let rafId = 0;
 
-    // Activity tracking: mark busy only when substantial output is flowing.
-    // Cursor moves, status bar refreshes etc. are tiny (< 100 bytes).
-    // Real AI output produces thousands of bytes per second.
-    const BURST_WINDOW_MS = 2000;
-    const BURST_BYTES_THRESHOLD = 500;
+    // Activity tracking:
+    // - Go gray: sustained substantial output (500+ bytes/s for 2s)
+    // - Clear gray: 1s of silence (fast recovery)
+    const BYTES_PER_SECOND_THRESHOLD = 500;
     let bytesInWindow = 0;
+    let windowStart = 0;
     let lastOutputTime = 0;
-    let busyTimer: ReturnType<typeof setTimeout>;
+    let idleTimer: ReturnType<typeof setTimeout>;
 
     const trackOutput = (byteCount: number) => {
       const now = Date.now();
-      if (now - lastOutputTime > BURST_WINDOW_MS) {
+
+      // Reset window if gap > 1s
+      if (now - lastOutputTime > 1000) {
         bytesInWindow = 0;
+        windowStart = now;
       }
       lastOutputTime = now;
       bytesInWindow += byteCount;
 
-      if (bytesInWindow >= BURST_BYTES_THRESHOLD) {
+      // Check if sustained: enough bytes over enough time
+      const elapsed = now - windowStart;
+      if (elapsed >= BUSY_ACTIVATE_MS && bytesInWindow >= BYTES_PER_SECOND_THRESHOLD * (elapsed / 1000)) {
         setBusy(true);
       }
 
-      clearTimeout(busyTimer);
-      busyTimer = setTimeout(() => {
-        if (Date.now() - lastOutputTime >= BUSY_IDLE_MS) {
-          setBusy(false);
-          bytesInWindow = 0;
-        }
-      }, BUSY_IDLE_MS);
+      // Fast clear: 1s silence → remove overlay
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        setBusy(false);
+        bytesInWindow = 0;
+      }, BUSY_DEACTIVATE_MS);
     };
 
     ws.onmessage = (e) => {
@@ -161,7 +166,7 @@ export function useTerminal(containerId: string | null) {
 
     return () => {
       clearTimeout(resizeTimer);
-      clearTimeout(busyTimer);
+      clearTimeout(idleTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
