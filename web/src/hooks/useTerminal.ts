@@ -87,7 +87,6 @@ export function useTerminal(containerId: string | null) {
     let bytesInWindow = 0;
     let lastOutputTime = 0;
     let busyTimer: ReturnType<typeof setTimeout>;
-    let windowResetTimer: ReturnType<typeof setTimeout>;
 
     const trackOutput = (byteCount: number) => {
       const now = Date.now();
@@ -163,7 +162,6 @@ export function useTerminal(containerId: string | null) {
     return () => {
       clearTimeout(resizeTimer);
       clearTimeout(busyTimer);
-      clearTimeout(windowResetTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
