@@ -103,32 +103,39 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
         r#"set -e
 INSTALL_DIR=$(eval echo "{install_dir}")
 WORK_DIR=$(eval echo "{remote_dir}")
+BIN="$INSTALL_DIR/neige/target/release/neige-server"
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Clone or update
-if [ -d neige/.git ]; then
-    echo "[neige] Updating existing repo..."
-    cd neige && git pull --ff-only
+# Skip build if binary already exists
+if [ -x "$BIN" ]; then
+    echo "[neige] Binary found, skipping build."
 else
-    echo "[neige] Cloning repository..."
-    git clone {REPO_URL}
-    cd neige
+    # Clone or update
+    if [ -d neige/.git ]; then
+        echo "[neige] Updating existing repo..."
+        cd neige && git pull --ff-only
+    else
+        echo "[neige] Cloning repository..."
+        git clone {REPO_URL}
+        cd neige
+    fi
+
+    # Build frontend
+    echo "[neige] Building frontend..."
+    cd web && npm install --no-audit --no-fund && npm run build && cd ..
+
+    # Build backend
+    echo "[neige] Building server..."
+    cargo build --release -p neige-server 2>&1
 fi
 
-# Build frontend
-echo "[neige] Building frontend..."
-cd web && npm install --no-audit --no-fund && npm run build && cd ..
-
-# Build backend
-echo "[neige] Building server..."
-cargo build --release -p neige-server 2>&1
-
-# Start server in the project working directory
+# Start server in the project working directory (detached from session)
 echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
 cd "$WORK_DIR"
-nohup "$INSTALL_DIR/neige/target/release/neige-server" --port {port} > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
+nohup "$BIN" --port {port} > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
+disown
 NEIGE_PID=$!
 
 # Wait for server to be ready
@@ -145,10 +152,10 @@ exit 1
 "#
     );
 
-    println!("Building and starting neige on remote (this may take a while)...\n");
+    println!("Provisioning neige on remote...\n");
 
     let status = Command::new("ssh")
-        .args(["-t", host, &script])
+        .args([host, &script])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
