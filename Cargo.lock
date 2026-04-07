@@ -1037,6 +1037,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "clap",
  "futures",
  "portable-pty",
  "serde",

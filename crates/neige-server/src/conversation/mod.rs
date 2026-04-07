@@ -166,6 +166,49 @@ fn build_resume_command(program: &str, session_id: &Uuid) -> String {
     }
 }
 
+/// Find the worktree cwd where Claude CLI stored a session's conversation data.
+///
+/// When a session is created with `--worktree`, Claude CLI creates a git worktree
+/// under `.claude/worktrees/{name}` and stores conversation data in a project
+/// directory keyed by that worktree path. On resume, we need to find and use that
+/// worktree path as the cwd so `claude --resume` can locate the conversation.
+fn find_worktree_cwd(session_id: &Uuid, base_cwd: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = Path::new(&home).join(".claude").join("projects");
+    let session_str = session_id.to_string();
+    let base_encoded = base_cwd.replace('/', "-");
+
+    for entry in std::fs::read_dir(&projects_dir).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // Only consider project dirs derived from our base repo that involve worktrees
+        if !dir_name.starts_with(&base_encoded) || !dir_name.contains("worktrees-") {
+            continue;
+        }
+
+        // Check if this project dir contains our session (as dir or .jsonl)
+        let has_session = entry.path().join(&session_str).exists()
+            || entry.path().join(format!("{}.jsonl", session_str)).exists();
+        if !has_session {
+            continue;
+        }
+
+        // Extract worktree name and construct the path
+        if let Some(idx) = dir_name.find("worktrees-") {
+            let name = &dir_name[idx + "worktrees-".len()..];
+            let worktree_path = format!("{}/.claude/worktrees/{}", base_cwd, name);
+            if Path::new(&worktree_path).exists() {
+                tracing::info!(
+                    "found worktree cwd for session {}: {}",
+                    session_id, worktree_path
+                );
+                return Some(worktree_path);
+            }
+        }
+    }
+    None
+}
+
 /// Get the .neige directory for a project.
 pub fn neige_dir(project_cwd: &str) -> PathBuf {
     Path::new(project_cwd).join(".neige")
@@ -330,7 +373,15 @@ impl ConversationManager {
         let command = build_resume_command(&conv.program, &conv.id);
         let env = proxy_env(conv.proxy.as_deref());
 
-        let pty = PtySession::spawn(&command, &conv.cwd, 200, 50, &env)?;
+        // For worktree sessions, find the actual worktree path where Claude CLI
+        // stored the conversation data; fall back to the saved cwd.
+        let cwd = if conv.use_worktree {
+            find_worktree_cwd(&conv.id, &conv.cwd).unwrap_or_else(|| conv.cwd.clone())
+        } else {
+            conv.cwd.clone()
+        };
+
+        let pty = PtySession::spawn(&command, &cwd, 200, 50, &env)?;
         conv.pty = Some(pty);
 
         save_session(&conv.meta(), &self.project_cwd);
