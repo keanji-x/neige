@@ -64,24 +64,9 @@ fn default_control_path(host: &str) -> String {
     format!("{home}/.ssh/neige-ctrl-{host}")
 }
 
-/// Check if neige-server is running on the remote host by testing the port.
-fn check_remote_neige(host: &str, port: u16) -> bool {
-    let check_cmd = format!(
-        "curl -sf -o /dev/null --max-time 3 http://localhost:{port}/api/conversations"
-    );
-    Command::new("ssh")
-        .args(["-o", "ConnectTimeout=5", host, &check_cmd])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Provision neige on the remote host: clone, build, and start.
-fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
-    println!("neige not detected on {host}:{port}, provisioning...");
-
+/// Ensure neige is up-to-date and running on the remote host.
+/// Always pulls latest code; rebuilds and restarts if there are changes.
+fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
     // Source shell profile so nvm/cargo are available in non-interactive SSH
     let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done"#;
 
@@ -103,7 +88,6 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
         return false;
     }
 
-    // Clone (or update) + build + start in one SSH session
     let script = format!(
         r#"# Load shell profile for nvm/cargo in non-interactive SSH
 for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done
@@ -112,34 +96,52 @@ set -e
 INSTALL_DIR=$(eval echo "{install_dir}")
 WORK_DIR=$(eval echo "{remote_dir}")
 BIN="$INSTALL_DIR/neige/target/release/neige-server"
+NEED_BUILD=0
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Skip build if binary already exists
-if [ -x "$BIN" ]; then
-    echo "[neige] Binary found, skipping build."
-else
-    # Clone or update
-    if [ -d neige/.git ]; then
-        echo "[neige] Updating existing repo..."
-        cd neige && git pull --ff-only
-    else
-        echo "[neige] Cloning repository..."
-        git clone {REPO_URL}
-        cd neige
+# Clone or pull
+if [ -d neige/.git ]; then
+    cd neige
+    OLD_HEAD=$(git rev-parse HEAD)
+    echo "[neige] Checking for updates..."
+    git pull --ff-only
+    NEW_HEAD=$(git rev-parse HEAD)
+    if [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
+        echo "[neige] Code updated (${{OLD_HEAD:0:7}} → ${{NEW_HEAD:0:7}}), rebuilding..."
+        NEED_BUILD=1
     fi
+else
+    echo "[neige] Cloning repository..."
+    git clone {REPO_URL}
+    cd neige
+    NEED_BUILD=1
+fi
 
-    # Build frontend
+# Build if needed (new clone, code changed, or binary missing)
+if [ "$NEED_BUILD" = "1" ] || [ ! -x "$BIN" ]; then
     echo "[neige] Building frontend..."
     cd web && npm install --no-audit --no-fund && npm run build && cd ..
 
-    # Build backend
     echo "[neige] Building server..."
     cargo build --release -p neige-server 2>&1
+
+    # Kill old server if running (will be restarted below)
+    if pkill -f "neige-server.*--port {port}" 2>/dev/null; then
+        echo "[neige] Stopped old server."
+        sleep 1
+    fi
+else
+    echo "[neige] Up to date."
 fi
 
-# Start server in the project working directory (detached from session)
+# Start server if not running
+if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/conversations 2>/dev/null; then
+    echo "[neige] Server already running on port {port}."
+    exit 0
+fi
+
 echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
 cd "$WORK_DIR"
 TERM=xterm-256color COLORTERM=truecolor nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
@@ -160,7 +162,7 @@ exit 1
 "#
     );
 
-    println!("Provisioning neige on remote...\n");
+    println!("Checking remote neige...\n");
 
     let status = Command::new("ssh")
         .args([host, &script])
@@ -171,7 +173,7 @@ exit 1
 
     match status {
         Ok(s) if s.success() => {
-            println!("\nRemote neige-server is running.");
+            println!();
             true
         }
         Ok(s) => {
@@ -299,14 +301,10 @@ async fn main() {
         .control_path
         .unwrap_or_else(|| default_control_path(&cli.host));
 
-    // Check if neige is running on remote, provision if needed
+    // Ensure neige is up-to-date and running on remote
     if !cli.no_provision {
-        if !check_remote_neige(&cli.host, cli.port) {
-            if !provision_remote(&cli.host, cli.port, &cli.remote_dir, &cli.install_dir) {
-                std::process::exit(1);
-            }
-        } else {
-            println!("neige-server detected on {host}:{port}.", host = cli.host, port = cli.port);
+        if !ensure_remote(&cli.host, cli.port, &cli.remote_dir, &cli.install_dir) {
+            std::process::exit(1);
         }
     }
 
