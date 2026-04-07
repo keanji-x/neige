@@ -79,24 +79,25 @@ export function useTerminal(containerId: string | null) {
     let writeBuf: Uint8Array[] = [];
     let rafId = 0;
 
-    // Activity tracking: mark busy only when output is sustained
-    // (multiple messages within a short window), not on one-off responses.
+    // Activity tracking: mark busy only when substantial output is flowing.
+    // Cursor moves, status bar refreshes etc. are tiny (< 100 bytes).
+    // Real AI output produces thousands of bytes per second.
     const BURST_WINDOW_MS = 2000;
-    const BURST_THRESHOLD = 5;
-    let outputCount = 0;
+    const BURST_BYTES_THRESHOLD = 500;
+    let bytesInWindow = 0;
     let lastOutputTime = 0;
     let busyTimer: ReturnType<typeof setTimeout>;
-    let burstResetTimer: ReturnType<typeof setTimeout>;
+    let windowResetTimer: ReturnType<typeof setTimeout>;
 
-    const markBusy = () => {
+    const trackOutput = (byteCount: number) => {
       const now = Date.now();
       if (now - lastOutputTime > BURST_WINDOW_MS) {
-        outputCount = 0;
+        bytesInWindow = 0;
       }
       lastOutputTime = now;
-      outputCount++;
+      bytesInWindow += byteCount;
 
-      if (outputCount >= BURST_THRESHOLD) {
+      if (bytesInWindow >= BURST_BYTES_THRESHOLD) {
         setBusy(true);
       }
 
@@ -104,18 +105,20 @@ export function useTerminal(containerId: string | null) {
       busyTimer = setTimeout(() => {
         if (Date.now() - lastOutputTime >= BUSY_IDLE_MS) {
           setBusy(false);
-          outputCount = 0;
+          bytesInWindow = 0;
         }
       }, BUSY_IDLE_MS);
     };
 
     ws.onmessage = (e) => {
+      let chunk: Uint8Array;
       if (e.data instanceof ArrayBuffer) {
-        writeBuf.push(new Uint8Array(e.data));
+        chunk = new Uint8Array(e.data);
       } else {
-        writeBuf.push(new TextEncoder().encode(e.data));
+        chunk = new TextEncoder().encode(e.data);
       }
-      markBusy();
+      writeBuf.push(chunk);
+      trackOutput(chunk.byteLength);
       if (!rafId) {
         rafId = requestAnimationFrame(() => {
           const chunks = writeBuf;
@@ -160,7 +163,7 @@ export function useTerminal(containerId: string | null) {
     return () => {
       clearTimeout(resizeTimer);
       clearTimeout(busyTimer);
-      clearTimeout(burstResetTimer);
+      clearTimeout(windowResetTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
