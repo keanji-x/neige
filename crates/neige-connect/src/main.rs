@@ -128,8 +128,10 @@ if [ "$NEED_BUILD" = "1" ] || [ ! -x "$BIN" ]; then
     cargo build --release -p neige-server 2>&1
 
     # Kill old server if running (will be restarted below)
-    if pkill -f "neige-server.*--port {port}" 2>/dev/null; then
-        echo "[neige] Stopped old server."
+    OLD_PID=$(pgrep -f "$BIN" | grep -v $$ || true)
+    if [ -n "$OLD_PID" ]; then
+        kill $OLD_PID 2>/dev/null || true
+        echo "[neige] Stopped old server (pid=$OLD_PID)."
         sleep 1
     fi
 else
