@@ -15,11 +15,12 @@ interface TerminalPanelProps {
 
 /** The component dockview renders inside each panel */
 function TerminalComponent({ params }: IDockviewPanelProps<{ convId: string }>) {
-  useTerminal(params.convId);
+  const { busy } = useTerminal(params.convId);
 
   return (
-    <div className="terminal-view" style={{ display: 'flex', width: '100%', height: '100%' }}>
+    <div className="terminal-view" style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
       <div id={`terminal-${params.convId}`} className="terminal-container" />
+      {busy && <div className="terminal-busy-overlay" />}
     </div>
   );
 }

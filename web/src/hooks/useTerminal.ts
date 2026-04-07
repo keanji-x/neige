@@ -1,11 +1,14 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+
+const BUSY_IDLE_MS = 5000;
 
 export function useTerminal(containerId: string | null) {
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!containerId) return;
@@ -76,12 +79,29 @@ export function useTerminal(containerId: string | null) {
     let writeBuf: Uint8Array[] = [];
     let rafId = 0;
 
+    // Activity tracking: mark busy when output is flowing,
+    // idle when no output for BUSY_IDLE_MS.
+    let lastOutputTime = 0;
+    let busyTimer: ReturnType<typeof setTimeout>;
+
+    const markBusy = () => {
+      lastOutputTime = Date.now();
+      setBusy(true);
+      clearTimeout(busyTimer);
+      busyTimer = setTimeout(() => {
+        if (Date.now() - lastOutputTime >= BUSY_IDLE_MS) {
+          setBusy(false);
+        }
+      }, BUSY_IDLE_MS);
+    };
+
     ws.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         writeBuf.push(new Uint8Array(e.data));
       } else {
         writeBuf.push(new TextEncoder().encode(e.data));
       }
+      markBusy();
       if (!rafId) {
         rafId = requestAnimationFrame(() => {
           const chunks = writeBuf;
@@ -125,6 +145,7 @@ export function useTerminal(containerId: string | null) {
 
     return () => {
       clearTimeout(resizeTimer);
+      clearTimeout(busyTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
@@ -136,5 +157,5 @@ export function useTerminal(containerId: string | null) {
     };
   }, [containerId]);
 
-  return { termRef, wsRef, fitRef };
+  return { termRef, wsRef, fitRef, busy };
 }

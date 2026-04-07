@@ -774,6 +774,15 @@
   border-radius: 2px;
 }
 
+.terminal-busy-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 5;
+  pointer-events: all;
+  transition: opacity 0.3s ease;
+}
+
 /* ===== Empty State ===== */
 .empty-state {
   position: absolute;
