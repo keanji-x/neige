@@ -45,7 +45,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       setShowSuggestions(false);
       setTimeout(() => titleRef.current?.focus(), 50);
     }
-  }, [open]);
+  }, [open, config.proxy]);
 
   const browse = useCallback(async (path: string) => {
     const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);

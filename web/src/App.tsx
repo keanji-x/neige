@@ -15,9 +15,18 @@ function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
+  const [openTabIds, setOpenTabIds] = useState<string[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  const syncTabState = useCallback(() => {
+    const api = dockviewApiRef.current;
+    if (!api) return;
+    setOpenTabIds(api.panels.map((p) => p.id));
+    setActiveTabId(api.activePanel?.id ?? null);
+  }, []);
 
   const openTab = useCallback(
-    (id: string) => {
+    (id: string, title?: string) => {
       const api = dockviewApiRef.current;
       if (!api) return;
 
@@ -28,13 +37,13 @@ function App() {
         return;
       }
 
-      // Find title
-      const conv = conversations.find((c) => c.id === id);
-      const title = conv?.title ?? 'untitled';
+      // Use provided title, or look up from current conversations
+      const resolvedTitle =
+        title ?? conversations.find((c) => c.id === id)?.title ?? 'untitled';
 
       api.addPanel({
         id,
-        title,
+        title: resolvedTitle,
         component: 'terminal',
         params: { convId: id },
       });
@@ -45,17 +54,14 @@ function App() {
   const handleCreate = useCallback(
     async (req: CreateConvRequest) => {
       const conv = await create(req);
-      openTab(conv.id);
+      openTab(conv.id, conv.title);
     },
     [create, openTab],
   );
 
-  // Tab X = detach (just close the panel, keep session alive)
-  const handleTabClose = useCallback((id: string) => {
-    const api = dockviewApiRef.current;
-    if (!api) return;
-    const panel = api.getPanel(id);
-    if (panel) api.removePanel(panel);
+  // Tab X in dockview = detach only (panel already removed by dockview)
+  const handleTabClose = useCallback((_id: string) => {
+    // Panel is already removed by dockview; syncTabState updates sidebar
   }, []);
 
   // Sidebar delete = real delete with confirmation
@@ -83,12 +89,6 @@ function App() {
     }
   }, [conversations]);
 
-  // Derive active/open state from dockview
-  const openTabIds = dockviewApiRef.current
-    ? Array.from(dockviewApiRef.current.panels).map((p) => p.id)
-    : [];
-  const activeTabId = dockviewApiRef.current?.activePanel?.id ?? null;
-
   return (
     <div className="app">
       <Sidebar
@@ -112,6 +112,7 @@ function App() {
         <TerminalPanel
           dockviewApiRef={dockviewApiRef}
           onTabClose={handleTabClose}
+          onTabStateChange={syncTabState}
         />
       </main>
       <CreateDialog
