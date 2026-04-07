@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type DockviewApi } from 'dockview';
 import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
@@ -70,6 +70,18 @@ function App() {
     await remove(id);
     setDeleteTarget(null);
   }, [deleteTarget, remove]);
+
+  // Sync conversation titles → dockview tab titles
+  useEffect(() => {
+    const api = dockviewApiRef.current;
+    if (!api) return;
+    for (const panel of api.panels) {
+      const conv = conversations.find((c) => c.id === panel.id);
+      if (conv && panel.title !== conv.title) {
+        panel.setTitle(conv.title);
+      }
+    }
+  }, [conversations]);
 
   // Derive active/open state from dockview
   const openTabIds = dockviewApiRef.current
