@@ -273,6 +273,16 @@ impl ConversationManager {
         } else {
             req.cwd.clone()
         };
+        let title = if req.title.is_empty() || req.title == "untitled" {
+            std::path::Path::new(&cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("untitled")
+                .to_string()
+        } else {
+            req.title
+        };
+
         let is_git = is_git_repo(&cwd);
         let use_worktree = req.use_worktree && is_git;
 
@@ -292,7 +302,7 @@ impl ConversationManager {
 
         let conv = Conversation {
             id,
-            title: req.title,
+            title,
             program: req.program,
             cwd,
             proxy: req.proxy,
