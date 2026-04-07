@@ -101,8 +101,8 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
     // Clone (or update) + build + start in one SSH session
     let script = format!(
         r#"set -e
-INSTALL_DIR="{install_dir}"
-WORK_DIR="{remote_dir}"
+INSTALL_DIR=$(eval echo "{install_dir}")
+WORK_DIR=$(eval echo "{remote_dir}")
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
