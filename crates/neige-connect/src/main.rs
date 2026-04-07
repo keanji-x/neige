@@ -82,10 +82,15 @@ fn check_remote_neige(host: &str, port: u16) -> bool {
 fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
     println!("neige not detected on {host}:{port}, provisioning...");
 
+    // Source shell profile so nvm/cargo are available in non-interactive SSH
+    let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null; done"#;
+
     // Check if cargo and node (20+) are available
-    let check_deps = r#"command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node -e "if(parseInt(process.version.slice(1))<20){console.error('Node.js 20+ required, got '+process.version);process.exit(1)}""#;
+    let check_deps = format!(
+        r#"{source_profile}; command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && node -e "if(parseInt(process.version.slice(1))<20){{console.error('Node.js 20+ required, got '+process.version);process.exit(1)}}""#
+    );
     let deps_ok = Command::new("ssh")
-        .args([host, check_deps])
+        .args([host, &check_deps])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -101,6 +106,9 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
     // Clone (or update) + build + start in one SSH session
     let script = format!(
         r#"set -e
+# Load shell profile for nvm/cargo in non-interactive SSH
+for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null; done
+
 INSTALL_DIR=$(eval echo "{install_dir}")
 WORK_DIR=$(eval echo "{remote_dir}")
 BIN="$INSTALL_DIR/neige/target/release/neige-server"
