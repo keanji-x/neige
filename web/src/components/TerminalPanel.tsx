@@ -18,7 +18,7 @@ function TerminalComponent({ params }: IDockviewPanelProps<{ convId: string }>) 
   const { busy } = useTerminal(params.convId);
 
   return (
-    <div className="terminal-view" style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
+    <div className="terminal-view">
       <div id={`terminal-${params.convId}`} className="terminal-container" />
       {busy && <div className="terminal-busy-overlay" />}
     </div>
