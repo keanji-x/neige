@@ -119,7 +119,7 @@ cargo build --release -p neige-server 2>&1
 
 # Start server in background
 echo "[neige] Starting neige-server on port {port}..."
-nohup ./target/release/neige-server > .neige-server.log 2>&1 &
+nohup ./target/release/neige-server --port {port} > .neige-server.log 2>&1 &
 NEIGE_PID=$!
 
 # Wait for server to be ready
