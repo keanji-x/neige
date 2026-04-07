@@ -19,9 +19,13 @@ struct Cli {
     #[arg(short, long)]
     local_port: Option<u16>,
 
-    /// Working directory on the remote host for neige-server
+    /// Project working directory on the remote host (where neige-server runs)
     #[arg(short = 'd', long, default_value = "~")]
     remote_dir: String,
+
+    /// Installation directory for neige on the remote host
+    #[arg(long, default_value = "~/.neige/install")]
+    install_dir: String,
 
     /// Poll interval in seconds for dynamic port forwarding
     #[arg(long, default_value = "5")]
@@ -75,7 +79,7 @@ fn check_remote_neige(host: &str, port: u16) -> bool {
 }
 
 /// Provision neige on the remote host: clone, build, and start.
-fn provision_remote(host: &str, port: u16, remote_dir: &str) -> bool {
+fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
     println!("neige not detected on {host}:{port}, provisioning...");
 
     // Check if cargo and node are available
@@ -97,7 +101,11 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str) -> bool {
     // Clone (or update) + build + start in one SSH session
     let script = format!(
         r#"set -e
-cd {remote_dir}
+INSTALL_DIR="{install_dir}"
+WORK_DIR="{remote_dir}"
+
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
 
 # Clone or update
 if [ -d neige/.git ]; then
@@ -117,21 +125,22 @@ cd web && npm install --no-audit --no-fund && npm run build && cd ..
 echo "[neige] Building server..."
 cargo build --release -p neige-server 2>&1
 
-# Start server in background
-echo "[neige] Starting neige-server on port {port}..."
-nohup ./target/release/neige-server --port {port} > .neige-server.log 2>&1 &
+# Start server in the project working directory
+echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
+cd "$WORK_DIR"
+nohup "$INSTALL_DIR/neige/target/release/neige-server" --port {port} > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
 NEIGE_PID=$!
 
 # Wait for server to be ready
 for i in $(seq 1 15); do
     if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/conversations 2>/dev/null; then
-        echo "[neige] Server is ready (pid=$NEIGE_PID)"
+        echo "[neige] Server is ready (pid=$NEIGE_PID, cwd=$WORK_DIR)"
         exit 0
     fi
     sleep 1
 done
 
-echo "[neige] Server failed to start. Check .neige-server.log"
+echo "[neige] Server failed to start. Check $INSTALL_DIR/neige/.neige-server.log"
 exit 1
 "#
     );
@@ -278,7 +287,7 @@ async fn main() {
     // Check if neige is running on remote, provision if needed
     if !cli.no_provision {
         if !check_remote_neige(&cli.host, cli.port) {
-            if !provision_remote(&cli.host, cli.port, &cli.remote_dir) {
+            if !provision_remote(&cli.host, cli.port, &cli.remote_dir, &cli.install_dir) {
                 std::process::exit(1);
             }
         } else {
