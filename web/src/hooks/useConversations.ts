@@ -58,10 +58,29 @@ export function useConversations() {
   }, [refresh]);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    const controller = new AbortController();
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API}/api/conversations`, { signal: controller.signal });
+        if (res.ok) {
+          setConversations(await res.json());
+          setConnected(true);
+        } else {
+          setConnected(false);
+        }
+      } catch {
+        if (!controller.signal.aborted) setConnected(false);
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, []);
 
   return { conversations, connected, create, resume, rename, remove, refresh };
 }

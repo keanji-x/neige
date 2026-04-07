@@ -1,238 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConvInfo } from '../types';
+import { PortForwardPanel } from './PortForwardPanel';
+import type { PortForward } from './PortForwardPanel';
 
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <button
-      className="btn-copy"
-      onClick={handleCopy}
-      title={text}
-    >
-      {copied ? 'Copied!' : label}
-    </button>
-  );
-}
-
-export interface PortForward {
-  remotePort: number;
-  localPort: number;
-}
-
-function PortForwardPanel({
-  ports,
-  sshHost,
-  onUpdate,
-}: {
-  ports: PortForward[];
-  sshHost: string;
-  onUpdate: (ports: PortForward[], host: string) => void;
-}) {
-  const [newRemote, setNewRemote] = useState('');
-  const [newLocal, setNewLocal] = useState('');
-  const [host, setHost] = useState(sshHost);
-  const [expanded, setExpanded] = useState(false);
-  const [tunnelStatus, setTunnelStatus] = useState<'connected' | 'disconnected'>('disconnected');
-  const [tunnelError, setTunnelError] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
-
-  useEffect(() => {
-    setHost(sshHost);
-  }, [sshHost]);
-
-  // Poll tunnel status
-  useEffect(() => {
-    if (!expanded) return;
-    const poll = async () => {
-      try {
-        const res = await fetch('/api/tunnel/status');
-        if (res.ok) {
-          const data = await res.json();
-          setTunnelStatus(data.status);
-          setTunnelError(data.error || null);
-          setConnecting(false);
-        }
-      } catch { /* ignore */ }
-    };
-    poll();
-    const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
-  }, [expanded]);
-
-  const addPort = () => {
-    const remote = parseInt(newRemote);
-    const local = parseInt(newLocal || newRemote);
-    if (!remote || remote <= 0) return;
-    if (ports.some((p) => p.remotePort === remote)) return;
-    onUpdate([...ports, { remotePort: remote, localPort: local }], host);
-    setNewRemote('');
-    setNewLocal('');
-  };
-
-  const removePort = (remotePort: number) => {
-    onUpdate(ports.filter((p) => p.remotePort !== remotePort), host);
-  };
-
-  const updateHost = (h: string) => {
-    setHost(h);
-    onUpdate(ports, h);
-  };
-
-  // Always include neige's own port
-  const neigePort = parseInt(location.port) || 3030;
-  const allPorts = [
-    { remotePort: neigePort, localPort: neigePort },
-    ...ports.filter((p) => p.remotePort !== neigePort),
-  ];
-
-  const startTunnel = async () => {
-    setConnecting(true);
-    setTunnelError(null);
-    try {
-      const res = await fetch('/api/tunnel/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ssh_host: host,
-          ports: allPorts.map((p) => ({
-            remote_port: p.remotePort,
-            local_port: p.localPort,
-          })),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setTunnelError(typeof data === 'string' ? data : data.error || 'Failed');
-        setConnecting(false);
-      } else {
-        setTunnelStatus(data.status);
-        setTunnelError(data.error || null);
-        // Keep connecting=true, polling will update
-      }
-    } catch (e) {
-      setTunnelError('Request failed');
-      setConnecting(false);
-    }
-  };
-
-  const stopTunnel = async () => {
-    try {
-      const res = await fetch('/api/tunnel/stop', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        setTunnelStatus(data.status);
-        setTunnelError(null);
-      }
-    } catch { /* ignore */ }
-  };
-
-  const isConnected = tunnelStatus === 'connected';
-
-  const sshCmd = `ssh -N ${allPorts.map((p) => `-L ${p.localPort}:localhost:${p.remotePort}`).join(' ')} ${host || 'USER@HOST'}`;
-
-  return (
-    <div className="sidebar-footer">
-      <button
-        className="sidebar-footer-toggle"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="sidebar-footer-label">
-          Port Forward
-          {isConnected && <span className="tunnel-dot connected" />}
-        </span>
-        <span className="sidebar-footer-arrow">{expanded ? '▾' : '▸'}</span>
-      </button>
-
-      {expanded && (
-        <div className="port-forward-panel">
-          <div className="port-forward-host">
-            <input
-              value={host}
-              onChange={(e) => updateHost(e.target.value)}
-              placeholder="user@host or ssh config alias"
-              className="port-forward-input"
-              disabled={isConnected}
-            />
-          </div>
-
-          <div className="port-forward-table">
-            <div className="port-forward-header">
-              <span>Server</span>
-              <span></span>
-              <span>Local</span>
-              <span></span>
-            </div>
-            {allPorts.map((p, i) => (
-              <div key={p.remotePort} className="port-forward-row">
-                <span className="port-num">{p.remotePort}</span>
-                <span className="port-arrow">→</span>
-                <span className="port-num">{p.localPort}</span>
-                {i === 0 ? (
-                  <span className="port-badge">neige</span>
-                ) : (
-                  <button
-                    className="port-remove"
-                    onClick={() => removePort(p.remotePort)}
-                    disabled={isConnected}
-                  >×</button>
-                )}
-              </div>
-            ))}
-            {!isConnected && (
-              <div className="port-forward-add">
-                <input
-                  value={newRemote}
-                  onChange={(e) => setNewRemote(e.target.value)}
-                  placeholder="port"
-                  className="port-forward-input port-input-small"
-                  onKeyDown={(e) => e.key === 'Enter' && addPort()}
-                />
-                <span className="port-arrow">→</span>
-                <input
-                  value={newLocal}
-                  onChange={(e) => setNewLocal(e.target.value)}
-                  placeholder="same"
-                  className="port-forward-input port-input-small"
-                  onKeyDown={(e) => e.key === 'Enter' && addPort()}
-                />
-                <button className="port-add-btn" onClick={addPort}>+</button>
-              </div>
-            )}
-          </div>
-
-          {tunnelError && (
-            <div className="tunnel-error">{tunnelError}</div>
-          )}
-
-          <div className="tunnel-actions">
-            {isConnected ? (
-              <button className="btn-tunnel btn-tunnel-stop" onClick={stopTunnel}>
-                Disconnect
-              </button>
-            ) : (
-              <button
-                className="btn-tunnel btn-tunnel-start"
-                onClick={startTunnel}
-                disabled={connecting || !host}
-              >
-                {connecting ? 'Connecting...' : 'Connect'}
-              </button>
-            )}
-            <CopyButton text={sshCmd} label="Copy cmd" />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+export type { PortForward };
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -257,8 +28,7 @@ interface SidebarProps {
   onRename: (id: string, title: string) => void;
   onNew: () => void;
   portForwards: PortForward[];
-  sshHost: string;
-  onPortForwardUpdate: (ports: PortForward[], host: string) => void;
+  onPortForwardUpdate: (ports: PortForward[]) => void;
 }
 
 const COLLAPSED_WIDTH = 48;
@@ -339,7 +109,6 @@ export function Sidebar({
   onRename,
   onNew,
   portForwards,
-  sshHost,
   onPortForwardUpdate,
 }: SidebarProps) {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH);
@@ -555,7 +324,6 @@ export function Sidebar({
           </div>
           <PortForwardPanel
             ports={portForwards}
-            sshHost={sshHost}
             onUpdate={onPortForwardUpdate}
           />
         </>

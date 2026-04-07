@@ -1,4 +1,4 @@
-use crate::tmux::PtySession;
+use crate::pty::PtySession;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -145,6 +145,18 @@ fn build_command(program: &str, session_id: &Uuid, use_worktree: bool, is_git: b
     }
 }
 
+/// Build proxy environment variables from a proxy URL.
+fn proxy_env(proxy: Option<&str>) -> Vec<(String, String)> {
+    proxy.map(|p| {
+        vec![
+            ("HTTP_PROXY".to_string(), p.to_string()),
+            ("HTTPS_PROXY".to_string(), p.to_string()),
+            ("http_proxy".to_string(), p.to_string()),
+            ("https_proxy".to_string(), p.to_string()),
+        ]
+    }).unwrap_or_default()
+}
+
 /// Build the resume command for a claude session.
 fn build_resume_command(program: &str, session_id: &Uuid) -> String {
     if program == "claude" || program.starts_with("claude ") {
@@ -271,14 +283,7 @@ impl ConversationManager {
             None
         };
 
-        let env = req.proxy.as_deref().map(|p| {
-            vec![
-                ("HTTP_PROXY".to_string(), p.to_string()),
-                ("HTTPS_PROXY".to_string(), p.to_string()),
-                ("http_proxy".to_string(), p.to_string()),
-                ("https_proxy".to_string(), p.to_string()),
-            ]
-        }).unwrap_or_default();
+        let env = proxy_env(req.proxy.as_deref());
 
         tracing::info!(
             "spawning session {id}: command={command:?}, cwd={cwd:?}, is_git={is_git}, use_worktree={use_worktree}"
@@ -313,14 +318,7 @@ impl ConversationManager {
         }
 
         let command = build_resume_command(&conv.program, &conv.id);
-        let env = conv.proxy.as_deref().map(|p| {
-            vec![
-                ("HTTP_PROXY".to_string(), p.to_string()),
-                ("HTTPS_PROXY".to_string(), p.to_string()),
-                ("http_proxy".to_string(), p.to_string()),
-                ("https_proxy".to_string(), p.to_string()),
-            ]
-        }).unwrap_or_default();
+        let env = proxy_env(conv.proxy.as_deref());
 
         let pty = PtySession::spawn(&command, &conv.cwd, 200, 50, &env)?;
         conv.pty = Some(pty);

@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { type DockviewApi } from 'dockview';
-import { Sidebar, type PortForward } from './components/Sidebar';
+import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
 import { CreateDialog } from './components/CreateDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -91,10 +91,9 @@ function App() {
           setDeleteTarget({ id, title: conv?.title ?? 'untitled' });
         }}
         onNew={() => setShowCreate(true)}
-        portForwards={(config.portForwards as PortForward[]) || []}
-        sshHost={(config.sshHost as string) || ''}
-        onPortForwardUpdate={(ports, host) => {
-          updateConfig({ portForwards: ports, sshHost: host });
+        portForwards={config.portForwards || []}
+        onPortForwardUpdate={(ports) => {
+          updateConfig({ portForwards: ports });
         }}
       />
       <main className="main">

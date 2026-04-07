@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
+const REPO_URL: &str = "https://github.com/keanji-x/neige.git";
+
 #[derive(Parser)]
 #[command(name = "neige-connect", about = "Connect to a remote neige server via SSH tunnel")]
 struct Cli {
@@ -17,6 +19,10 @@ struct Cli {
     #[arg(short, long)]
     local_port: Option<u16>,
 
+    /// Working directory on the remote host for neige-server
+    #[arg(short = 'd', long, default_value = "~")]
+    remote_dir: String,
+
     /// Poll interval in seconds for dynamic port forwarding
     #[arg(long, default_value = "5")]
     poll_interval: u64,
@@ -24,6 +30,10 @@ struct Cli {
     /// Don't open browser automatically
     #[arg(long)]
     no_browser: bool,
+
+    /// Skip auto-provisioning if neige is not running
+    #[arg(long)]
+    no_provision: bool,
 
     /// SSH control socket path (auto-generated if not set)
     #[arg(long)]
@@ -48,6 +58,107 @@ struct NeigeConfig {
 fn default_control_path(host: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     format!("{home}/.ssh/neige-ctrl-{host}")
+}
+
+/// Check if neige-server is running on the remote host by testing the port.
+fn check_remote_neige(host: &str, port: u16) -> bool {
+    let check_cmd = format!(
+        "curl -sf -o /dev/null --max-time 3 http://localhost:{port}/api/conversations"
+    );
+    Command::new("ssh")
+        .args(["-o", "ConnectTimeout=5", host, &check_cmd])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Provision neige on the remote host: clone, build, and start.
+fn provision_remote(host: &str, port: u16, remote_dir: &str) -> bool {
+    println!("neige not detected on {host}:{port}, provisioning...");
+
+    // Check if cargo and node are available
+    let check_deps = "command -v cargo >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1";
+    let deps_ok = Command::new("ssh")
+        .args([host, check_deps])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !deps_ok {
+        eprintln!("Remote host is missing cargo, node, or npm. Cannot auto-provision.");
+        eprintln!("Please install Rust and Node.js on the remote host first.");
+        return false;
+    }
+
+    // Clone (or update) + build + start in one SSH session
+    let script = format!(
+        r#"set -e
+cd {remote_dir}
+
+# Clone or update
+if [ -d neige/.git ]; then
+    echo "[neige] Updating existing repo..."
+    cd neige && git pull --ff-only
+else
+    echo "[neige] Cloning repository..."
+    git clone {REPO_URL}
+    cd neige
+fi
+
+# Build frontend
+echo "[neige] Building frontend..."
+cd web && npm install --no-audit --no-fund && npm run build && cd ..
+
+# Build backend
+echo "[neige] Building server..."
+cargo build --release -p neige-server 2>&1
+
+# Start server in background
+echo "[neige] Starting neige-server on port {port}..."
+nohup ./target/release/neige-server > .neige-server.log 2>&1 &
+NEIGE_PID=$!
+
+# Wait for server to be ready
+for i in $(seq 1 15); do
+    if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/conversations 2>/dev/null; then
+        echo "[neige] Server is ready (pid=$NEIGE_PID)"
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "[neige] Server failed to start. Check .neige-server.log"
+exit 1
+"#
+    );
+
+    println!("Building and starting neige on remote (this may take a while)...\n");
+
+    let status = Command::new("ssh")
+        .args(["-t", host, &script])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("\nRemote neige-server is running.");
+            true
+        }
+        Ok(s) => {
+            eprintln!("\nProvisioning failed (exit code: {})", s.code().unwrap_or(-1));
+            false
+        }
+        Err(e) => {
+            eprintln!("SSH error: {e}");
+            false
+        }
+    }
 }
 
 fn start_master(host: &str, neige_port: u16, local_port: u16, control_path: &str) -> bool {
@@ -163,6 +274,17 @@ async fn main() {
     let control_path = cli
         .control_path
         .unwrap_or_else(|| default_control_path(&cli.host));
+
+    // Check if neige is running on remote, provision if needed
+    if !cli.no_provision {
+        if !check_remote_neige(&cli.host, cli.port) {
+            if !provision_remote(&cli.host, cli.port, &cli.remote_dir) {
+                std::process::exit(1);
+            }
+        } else {
+            println!("neige-server detected on {host}:{port}.", host = cli.host, port = cli.port);
+        }
+    }
 
     // Start SSH master connection with neige port forwarded
     if !start_master(&cli.host, cli.port, local_port, &control_path) {

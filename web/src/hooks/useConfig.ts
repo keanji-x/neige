@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import type { PortForward } from '../components/PortForwardPanel';
+
 export interface NeigeConfig {
   proxy?: string;
   defaultProgram?: string;
-  [key: string]: unknown;
+  portForwards?: PortForward[];
 }
 
 export function useConfig() {
@@ -11,13 +13,17 @@ export function useConfig() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    fetch('/api/config')
+    const controller = new AbortController();
+    fetch('/api/config', { signal: controller.signal })
       .then((r) => r.json())
       .then((data) => {
         setConfig(data);
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {
+        if (!controller.signal.aborted) setLoaded(true);
+      });
+    return () => controller.abort();
   }, []);
 
   const update = useCallback(async (patch: Partial<NeigeConfig>) => {

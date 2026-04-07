@@ -14,12 +14,10 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::conversation::{CreateConvRequest, SharedManager, neige_dir};
-use crate::tunnel::{SharedTunnel, TunnelConfig};
 
 #[derive(Clone)]
 pub struct AppState {
     pub manager: SharedManager,
-    pub tunnel: SharedTunnel,
 }
 
 #[derive(serde::Serialize)]
@@ -47,9 +45,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/config", post(save_config))
         .route("/api/layout", get(get_layout))
         .route("/api/layout", post(save_layout))
-        .route("/api/tunnel/status", get(tunnel_status))
-        .route("/api/tunnel/start", post(tunnel_start))
-        .route("/api/tunnel/stop", post(tunnel_stop))
         .route("/ws/{id}", get(ws_handler))
         .with_state(state)
 }
@@ -320,26 +315,4 @@ async fn handle_ws(
     send_task.abort();
 }
 
-// --- Tunnel endpoints ---
-
-async fn tunnel_status(State(state): State<AppState>) -> impl IntoResponse {
-    let mut tunnel = state.tunnel.lock().await;
-    Json(tunnel.status())
-}
-
-async fn tunnel_start(
-    State(state): State<AppState>,
-    Json(config): Json<TunnelConfig>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let mut tunnel = state.tunnel.lock().await;
-    let info = tunnel
-        .start(config)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(info))
-}
-
-async fn tunnel_stop(State(state): State<AppState>) -> impl IntoResponse {
-    let mut tunnel = state.tunnel.lock().await;
-    Json(tunnel.stop())
-}
 

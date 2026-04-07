@@ -35,19 +35,12 @@ export function useTerminal(containerId: string | null) {
     fitRef.current = fitAddon;
 
     // --- Resize strategy ---
-    // Two separate debounces:
-    //   1. Visual fit (fast, 100ms) — makes the terminal look correct quickly
-    //   2. PTY resize (slow, 500ms) — avoids flooding Claude TUI with SIGWINCH
-    //
-    // During the gap between fit and PTY resize, we suppress onResize from
-    // sending to the server. Only the PTY resize timer sends the final size.
+    // Single debounced pipeline: container change → fit xterm → send PTY resize.
+    // The 150ms debounce prevents flooding the PTY with SIGWINCH during drag resizes.
 
     let lastCols = 0;
     let lastRows = 0;
-    let suppressResizeEvent = false;
-
-    let fitTimer: ReturnType<typeof setTimeout>;
-    let ptyResizeTimer: ReturnType<typeof setTimeout>;
+    let resizeTimer: ReturnType<typeof setTimeout>;
 
     const sendResize = (cols: number, rows: number) => {
       const ws = wsRef.current;
@@ -59,34 +52,18 @@ export function useTerminal(containerId: string | null) {
     };
 
     const scheduleFit = () => {
-      clearTimeout(fitTimer);
-      fitTimer = setTimeout(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
         const rect = container.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
 
-        // Suppress onResize from triggering PTY resize during this fit
-        suppressResizeEvent = true;
         fitAddon.fit();
-        suppressResizeEvent = false;
-
-        // Schedule the actual PTY resize after things settle
-        clearTimeout(ptyResizeTimer);
-        ptyResizeTimer = setTimeout(() => {
-          const dims = fitAddon.proposeDimensions();
-          if (dims && (dims.cols !== lastCols || dims.rows !== lastRows)) {
-            sendResize(dims.cols, dims.rows);
-          }
-        }, 50);
-      }, 100);
+        const dims = fitAddon.proposeDimensions();
+        if (dims && (dims.cols !== lastCols || dims.rows !== lastRows)) {
+          sendResize(dims.cols, dims.rows);
+        }
+      }, 150);
     };
-
-    // onResize: only forward to PTY if not triggered by our own fit()
-    term.onResize(({ cols, rows }) => {
-      if (!suppressResizeEvent && (cols !== lastCols || rows !== lastRows)) {
-        clearTimeout(ptyResizeTimer);
-        ptyResizeTimer = setTimeout(() => sendResize(cols, rows), 50);
-      }
-    });
 
     // WebSocket connection
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -147,8 +124,7 @@ export function useTerminal(containerId: string | null) {
     ro.observe(container);
 
     return () => {
-      clearTimeout(fitTimer);
-      clearTimeout(ptyResizeTimer);
+      clearTimeout(resizeTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();

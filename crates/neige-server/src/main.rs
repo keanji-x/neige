@@ -1,7 +1,6 @@
 mod api;
 mod conversation;
-mod tmux;
-mod tunnel;
+mod pty;
 
 use tower_http::services::ServeDir;
 
@@ -16,7 +15,6 @@ async fn main() {
 
     let state = api::AppState {
         manager: conversation::new_shared_manager(&project_cwd),
-        tunnel: tunnel::new_shared_tunnel(),
     };
 
     let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
