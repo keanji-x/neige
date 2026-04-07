@@ -83,7 +83,7 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
     println!("neige not detected on {host}:{port}, provisioning...");
 
     // Source shell profile so nvm/cargo are available in non-interactive SSH
-    let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null; done"#;
+    let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done"#;
 
     // Check if cargo and node (20+) are available
     let check_deps = format!(
@@ -91,8 +91,8 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
     );
     let deps_ok = Command::new("ssh")
         .args([host, &check_deps])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -105,10 +105,10 @@ fn provision_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) 
 
     // Clone (or update) + build + start in one SSH session
     let script = format!(
-        r#"set -e
-# Load shell profile for nvm/cargo in non-interactive SSH
-for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null; done
+        r#"# Load shell profile for nvm/cargo in non-interactive SSH
+for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done
 
+set -e
 INSTALL_DIR=$(eval echo "{install_dir}")
 WORK_DIR=$(eval echo "{remote_dir}")
 BIN="$INSTALL_DIR/neige/target/release/neige-server"
