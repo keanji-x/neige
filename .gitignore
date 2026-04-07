@@ -1,0 +1,20 @@
+# Rust
+/target
+
+# Node
+web/node_modules
+web/dist
+
+# Old frontend
+frontend/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Config (may contain proxy/credentials)
+.config/
