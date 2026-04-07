@@ -59,6 +59,10 @@ export function useConversations() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let failCount = 0;
+    const BASE_INTERVAL = 3000;
+    const MAX_INTERVAL = 30000;
 
     const poll = async () => {
       try {
@@ -66,19 +70,29 @@ export function useConversations() {
         if (res.ok) {
           setConversations(await res.json());
           setConnected(true);
+          failCount = 0;
         } else {
           setConnected(false);
+          failCount++;
         }
       } catch {
-        if (!controller.signal.aborted) setConnected(false);
+        if (!controller.signal.aborted) {
+          setConnected(false);
+          failCount++;
+        }
+      }
+      if (!controller.signal.aborted) {
+        const delay = failCount > 0
+          ? Math.min(BASE_INTERVAL * Math.pow(1.5, failCount), MAX_INTERVAL)
+          : BASE_INTERVAL;
+        timer = setTimeout(poll, delay);
       }
     };
 
     poll();
-    const interval = setInterval(poll, 3000);
     return () => {
       controller.abort();
-      clearInterval(interval);
+      clearTimeout(timer);
     };
   }, []);
 

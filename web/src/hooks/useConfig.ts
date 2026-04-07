@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PortForward } from '../components/PortForwardPanel';
 
@@ -10,6 +10,8 @@ export interface NeigeConfig {
 
 export function useConfig() {
   const [config, setConfig] = useState<NeigeConfig>({});
+  const configRef = useRef(config);
+  configRef.current = config;
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -27,14 +29,14 @@ export function useConfig() {
   }, []);
 
   const update = useCallback(async (patch: Partial<NeigeConfig>) => {
-    const next = { ...config, ...patch };
+    const next = { ...configRef.current, ...patch };
     setConfig(next);
     await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(next),
     });
-  }, [config]);
+  }, []);
 
   return { config, update, loaded };
 }

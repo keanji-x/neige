@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import {
   DockviewReact,
   type IDockviewPanelProps,
@@ -11,6 +11,7 @@ import { useTerminal } from '../hooks/useTerminal';
 interface TerminalPanelProps {
   dockviewApiRef: React.MutableRefObject<DockviewApi | null>;
   onTabClose?: (id: string) => void;
+  onTabStateChange?: () => void;
 }
 
 /** The component dockview renders inside each panel */
@@ -29,23 +30,23 @@ const components = {
   terminal: TerminalComponent,
 };
 
-let saveTimer: ReturnType<typeof setTimeout>;
+export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: TerminalPanelProps) {
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-function saveLayout(api: DockviewApi) {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      const json = api.toJSON();
-      fetch('/api/layout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(json),
-      });
-    } catch { /* ignore */ }
-  }, 500);
-}
+  const saveLayout = useCallback((api: DockviewApi) => {
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try {
+        const json = api.toJSON();
+        fetch('/api/layout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(json),
+        });
+      } catch { /* ignore */ }
+    }, 500);
+  }, []);
 
-export function TerminalPanel({ dockviewApiRef, onTabClose }: TerminalPanelProps) {
   const handleReady = useCallback(
     async (e: DockviewReadyEvent) => {
       dockviewApiRef.current = e.api;
@@ -102,12 +103,18 @@ export function TerminalPanel({ dockviewApiRef, onTabClose }: TerminalPanelProps
       // Auto-save layout on changes
       e.api.onDidLayoutChange(() => saveLayout(e.api));
 
-      // Tab X = detach only
+      // Sync tab state to parent on panel/active changes
+      e.api.onDidAddPanel(() => onTabStateChange?.());
       e.api.onDidRemovePanel((panel) => {
         onTabClose?.(panel.id);
+        onTabStateChange?.();
       });
+      e.api.onDidActivePanelChange(() => onTabStateChange?.());
+
+      // Initial sync after layout restore
+      onTabStateChange?.();
     },
-    [dockviewApiRef, onTabClose],
+    [dockviewApiRef, onTabClose, onTabStateChange, saveLayout],
   );
 
   return (

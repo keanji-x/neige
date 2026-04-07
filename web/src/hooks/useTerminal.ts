@@ -69,12 +69,6 @@ export function useTerminal(containerId: string | null) {
       }, 150);
     };
 
-    // WebSocket connection
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}/ws/${containerId}`);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
-
     // Batch incoming PTY output per animation frame to avoid
     // cursor jitter during TUI redraws (e.g. Claude Code SIGWINCH)
     let writeBuf: Uint8Array[] = [];
@@ -114,47 +108,84 @@ export function useTerminal(containerId: string | null) {
       }, BUSY_DEACTIVATE_MS);
     };
 
-    ws.onmessage = (e) => {
-      let chunk: Uint8Array;
-      if (e.data instanceof ArrayBuffer) {
-        chunk = new Uint8Array(e.data);
-      } else {
-        chunk = new TextEncoder().encode(e.data);
-      }
-      writeBuf.push(chunk);
-      trackOutput(chunk.byteLength);
-      if (!rafId) {
-        rafId = requestAnimationFrame(() => {
-          const chunks = writeBuf;
-          writeBuf = [];
-          rafId = 0;
-          for (const chunk of chunks) {
-            term.write(chunk);
-          }
-        });
-      }
+    const wireWs = (ws: WebSocket) => {
+      ws.onmessage = (e) => {
+        let chunk: Uint8Array;
+        if (e.data instanceof ArrayBuffer) {
+          chunk = new Uint8Array(e.data);
+        } else {
+          chunk = new TextEncoder().encode(e.data);
+        }
+        writeBuf.push(chunk);
+        trackOutput(chunk.byteLength);
+        if (!rafId) {
+          rafId = requestAnimationFrame(() => {
+            const chunks = writeBuf;
+            writeBuf = [];
+            rafId = 0;
+            for (const c of chunks) {
+              term.write(c);
+            }
+          });
+        }
+      };
+
+      ws.onerror = () => {
+        // onerror is always followed by onclose, reconnect happens there
+      };
+
+      ws.onclose = (ev) => {
+        // Code 1000 = normal close, 1005 = no status (browser cleanup)
+        // Don't reconnect for clean closures or if we're cleaning up
+        if (disposed || ev.code === 1000) {
+          term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
+          return;
+        }
+        term.write('\r\n\x1b[33m[connection lost — reconnecting...]\x1b[0m\r\n');
+        scheduleReconnect();
+      };
+
+      ws.onopen = () => {
+        reconnectAttempts = 0;
+        // Initial fit + resize
+        fitAddon.fit();
+        const dims = fitAddon.proposeDimensions();
+        if (dims) {
+          sendResize(dims.cols, dims.rows);
+        }
+      };
     };
 
-    ws.onerror = () => {
-      term.write('\r\n\x1b[33m[connection failed — session may not exist]\x1b[0m\r\n');
+    // WebSocket connection with reconnect
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${proto}//${location.host}/ws/${containerId}`;
+    let disposed = false;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    const MAX_RECONNECT_DELAY = 10000;
+
+    const connect = () => {
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
+      wireWs(ws);
     };
 
-    ws.onclose = () => {
-      term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
+    const scheduleReconnect = () => {
+      if (disposed) return;
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+      reconnectTimer = setTimeout(() => {
+        if (!disposed) connect();
+      }, delay);
     };
 
-    ws.onopen = () => {
-      // Initial fit + resize
-      fitAddon.fit();
-      const dims = fitAddon.proposeDimensions();
-      if (dims) {
-        sendResize(dims.cols, dims.rows);
-      }
-    };
+    connect();
 
     // Forward keyboard input
     term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
@@ -165,12 +196,14 @@ export function useTerminal(containerId: string | null) {
     ro.observe(container);
 
     return () => {
+      disposed = true;
       clearTimeout(resizeTimer);
       clearTimeout(idleTimer);
+      clearTimeout(reconnectTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
-      ws.close();
+      wsRef.current?.close(1000);
       term.dispose();
       termRef.current = null;
       wsRef.current = null;
