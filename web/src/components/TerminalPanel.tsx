@@ -10,6 +10,7 @@ import { useTerminal } from '../hooks/useTerminal';
 
 interface TerminalPanelProps {
   dockviewApiRef: React.MutableRefObject<DockviewApi | null>;
+  onTabClose?: (id: string) => void;
 }
 
 /** The component dockview renders inside each panel */
@@ -27,33 +28,85 @@ const components = {
   terminal: TerminalComponent,
 };
 
-export function TerminalPanel({ dockviewApiRef }: TerminalPanelProps) {
+let saveTimer: ReturnType<typeof setTimeout>;
+
+function saveLayout(api: DockviewApi) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      const json = api.toJSON();
+      fetch('/api/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(json),
+      });
+    } catch { /* ignore */ }
+  }, 500);
+}
+
+export function TerminalPanel({ dockviewApiRef, onTabClose }: TerminalPanelProps) {
   const handleReady = useCallback(
-    (e: DockviewReadyEvent) => {
+    async (e: DockviewReadyEvent) => {
       dockviewApiRef.current = e.api;
 
-      // Restore layout from localStorage
-      const saved = localStorage.getItem('neige-dockview-layout');
-      if (saved) {
-        try {
-          const layout = JSON.parse(saved);
-          e.api.fromJSON(layout);
-        } catch {
-          // ignore corrupt layout
+      // Restore layout from server, filtering out dead panels
+      try {
+        const [layoutRes, convsRes] = await Promise.all([
+          fetch('/api/layout'),
+          fetch('/api/conversations'),
+        ]);
+        if (layoutRes.ok && convsRes.ok) {
+          const layout = await layoutRes.json();
+          const convs: { id: string }[] = await convsRes.json();
+          if (layout) {
+            const validIds = new Set(convs.map((c) => c.id));
+            // Remove panels that reference non-existent sessions
+            if (layout.panels) {
+              layout.panels = Object.fromEntries(
+                Object.entries(layout.panels).filter(([id]) => validIds.has(id))
+              );
+            }
+            // Clean grid leaves that reference removed panels
+            if (layout.grid) {
+              const cleanNode = (node: Record<string, unknown>): boolean => {
+                if (node.type === 'leaf' && Array.isArray(node.data)) {
+                  node.data = (node.data as { id: string }[]).filter(
+                    (d) => validIds.has(d.id)
+                  );
+                  return (node.data as unknown[]).length > 0;
+                }
+                if (node.type === 'branch' && Array.isArray(node.data)) {
+                  node.data = (node.data as Record<string, unknown>[]).filter(cleanNode);
+                  return (node.data as unknown[]).length > 0;
+                }
+                return true;
+              };
+              cleanNode(layout.grid.root);
+            }
+            // Only restore if there are still valid panels
+            const hasPanels = Object.keys(layout.panels ?? {}).length > 0;
+            if (hasPanels) {
+              try {
+                e.api.fromJSON(layout);
+              } catch {
+                // layout corrupt after filtering, start fresh
+              }
+            }
+          }
         }
+      } catch {
+        // ignore
       }
 
       // Auto-save layout on changes
-      const save = () => {
-        try {
-          const json = e.api.toJSON();
-          localStorage.setItem('neige-dockview-layout', JSON.stringify(json));
-        } catch { /* ignore */ }
-      };
+      e.api.onDidLayoutChange(() => saveLayout(e.api));
 
-      e.api.onDidLayoutChange(save);
+      // Tab X = detach only
+      e.api.onDidRemovePanel((panel) => {
+        onTabClose?.(panel.id);
+      });
     },
-    [dockviewApiRef],
+    [dockviewApiRef, onTabClose],
   );
 
   return (

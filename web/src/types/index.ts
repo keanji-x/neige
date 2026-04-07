@@ -1,10 +1,12 @@
 export interface ConvInfo {
   id: string;
   title: string;
-  status: 'running' | 'dead';
+  status: 'running' | 'detached' | 'dead';
   program: string;
   cwd: string;
   created_at: string;
+  use_worktree: boolean;
+  worktree_branch: string | null;
 }
 
 export interface CreateConvRequest {
@@ -12,6 +14,7 @@ export interface CreateConvRequest {
   program: string;
   cwd: string;
   proxy?: string;
+  use_worktree: boolean;
 }
 
 export interface DirEntry {

@@ -117,6 +117,10 @@ export function useTerminal(containerId: string | null) {
       }
     };
 
+    ws.onerror = () => {
+      term.write('\r\n\x1b[33m[connection failed — session may not exist]\x1b[0m\r\n');
+    };
+
     ws.onclose = () => {
       term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
     };

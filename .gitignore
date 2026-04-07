@@ -18,3 +18,6 @@ frontend/
 
 # Config (may contain proxy/credentials)
 .config/
+
+# Neige local state
+.neige/
