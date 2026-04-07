@@ -31,6 +31,8 @@ impl PtySession {
         cmd.arg("-c");
         cmd.arg(program);
         cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         for (k, v) in env {
             cmd.env(k, v);
         }
