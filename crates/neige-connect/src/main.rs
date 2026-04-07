@@ -134,7 +134,7 @@ fi
 # Start server in the project working directory (detached from session)
 echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
 cd "$WORK_DIR"
-nohup "$BIN" --port {port} > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
+nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
 disown
 NEIGE_PID=$!
 
