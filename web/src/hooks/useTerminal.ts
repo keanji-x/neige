@@ -79,18 +79,32 @@ export function useTerminal(containerId: string | null) {
     let writeBuf: Uint8Array[] = [];
     let rafId = 0;
 
-    // Activity tracking: mark busy when output is flowing,
-    // idle when no output for BUSY_IDLE_MS.
+    // Activity tracking: mark busy only when output is sustained
+    // (multiple messages within a short window), not on one-off responses.
+    const BURST_WINDOW_MS = 2000;
+    const BURST_THRESHOLD = 5;
+    let outputCount = 0;
     let lastOutputTime = 0;
     let busyTimer: ReturnType<typeof setTimeout>;
+    let burstResetTimer: ReturnType<typeof setTimeout>;
 
     const markBusy = () => {
-      lastOutputTime = Date.now();
-      setBusy(true);
+      const now = Date.now();
+      if (now - lastOutputTime > BURST_WINDOW_MS) {
+        outputCount = 0;
+      }
+      lastOutputTime = now;
+      outputCount++;
+
+      if (outputCount >= BURST_THRESHOLD) {
+        setBusy(true);
+      }
+
       clearTimeout(busyTimer);
       busyTimer = setTimeout(() => {
         if (Date.now() - lastOutputTime >= BUSY_IDLE_MS) {
           setBusy(false);
+          outputCount = 0;
         }
       }, BUSY_IDLE_MS);
     };
@@ -146,6 +160,7 @@ export function useTerminal(containerId: string | null) {
     return () => {
       clearTimeout(resizeTimer);
       clearTimeout(busyTimer);
+      clearTimeout(burstResetTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
       ro.disconnect();
