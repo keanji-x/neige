@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CreateConvRequest, DirEntry } from '../types';
-import type { NeigeConfig } from '../hooks/useConfig';
+import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
 
 interface CreateDialogProps {
   open: boolean;
@@ -179,6 +179,37 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
         <h2>New Conversation</h2>
+
+        {(config.recentCommands?.length ?? 0) > 0 && (
+          <div className="recent-commands">
+            <label className="field-label">Recent</label>
+            <div className="recent-commands-list">
+              {config.recentCommands!.map((cmd: RecentCommand, i: number) => (
+                <button
+                  key={i}
+                  className="recent-command-item"
+                  onClick={() => {
+                    setTitle(cmd.title || '');
+                    setProgram(PROGRAMS.includes(cmd.program) ? cmd.program : '__custom__');
+                    if (!PROGRAMS.includes(cmd.program)) setCustomProgram(cmd.program);
+                    setCwd(cmd.cwd);
+                    setUseWorktree(cmd.use_worktree);
+                    // Trigger git detection for the cwd
+                    if (cmd.cwd) {
+                      fetch(`/api/browse?path=${encodeURIComponent(cmd.cwd)}`)
+                        .then((r) => r.ok ? r.json() : null)
+                        .then((data) => { if (data) setIsGitRepo(data.is_git_repo ?? false); })
+                        .catch(() => {});
+                    }
+                  }}
+                >
+                  <span className="recent-command-program">{cmd.program}</span>
+                  <span className="recent-command-path">{cmd.cwd ? cmd.cwd.replace(/^\/home\/[^/]+/, '~') : 'default'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <label className="field-label">Title</label>
         <input

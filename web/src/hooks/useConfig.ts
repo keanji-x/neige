@@ -2,10 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PortForward } from '../components/PortForwardPanel';
 
+export interface RecentCommand {
+  program: string;
+  cwd: string;
+  title: string;
+  use_worktree: boolean;
+}
+
+export interface RecentFile {
+  path: string;
+  name: string;
+}
+
 export interface NeigeConfig {
   proxy?: string;
   defaultProgram?: string;
   portForwards?: PortForward[];
+  recentCommands?: RecentCommand[];
+  recentFiles?: RecentFile[];
 }
 
 export function useConfig() {

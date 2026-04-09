@@ -7,6 +7,7 @@ import {
 } from 'dockview';
 import 'dockview-core/dist/styles/dockview.css';
 import { useTerminal } from '../hooks/useTerminal';
+import { FileViewer } from './FileViewer';
 
 interface TerminalPanelProps {
   dockviewApiRef: React.MutableRefObject<DockviewApi | null>;
@@ -26,8 +27,14 @@ function TerminalComponent({ params }: IDockviewPanelProps<{ convId: string }>) 
   );
 }
 
+/** File viewer panel for markdown/code files */
+function FileViewerComponent({ params }: IDockviewPanelProps<{ filePath: string }>) {
+  return <FileViewer filePath={params.filePath} />;
+}
+
 const components = {
   terminal: TerminalComponent,
+  fileViewer: FileViewerComponent,
 };
 
 export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: TerminalPanelProps) {
