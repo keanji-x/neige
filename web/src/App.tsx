@@ -4,6 +4,8 @@ import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
 import { CreateDialog } from './components/CreateDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { FilePicker } from './components/FilePicker';
+import { QuickLauncher } from './components/QuickLauncher';
 import { useConversations } from './hooks/useConversations';
 import { useConfig } from './hooks/useConfig';
 import type { CreateConvRequest } from './types';
@@ -13,6 +15,8 @@ function App() {
   const { conversations, connected, create, rename, remove } = useConversations();
   const { config, update: updateConfig } = useConfig();
   const [showCreate, setShowCreate] = useState(false);
+  const [showFilePicker, setShowFilePicker] = useState(false);
+  const [showQuickLauncher, setShowQuickLauncher] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
@@ -55,9 +59,60 @@ function App() {
     async (req: CreateConvRequest) => {
       const conv = await create(req);
       openTab(conv.id, conv.title);
+      // Save to recent commands
+      const recent = config.recentCommands || [];
+      const entry = { program: req.program, cwd: req.cwd, title: req.title, use_worktree: req.use_worktree };
+      // Deduplicate by program+cwd
+      const filtered = recent.filter(
+        (r) => !(r.program === entry.program && r.cwd === entry.cwd),
+      );
+      updateConfig({ recentCommands: [entry, ...filtered].slice(0, 10) });
     },
-    [create, openTab],
+    [create, openTab, config.recentCommands, updateConfig],
   );
+
+  const openFile = useCallback(
+    (filePath: string, fileName: string) => {
+      const api = dockviewApiRef.current;
+      if (!api) return;
+      // Use file path as panel ID (prefix to avoid collision with conv IDs)
+      const panelId = `file:${filePath}`;
+      const existing = api.getPanel(panelId);
+      if (existing) {
+        existing.api.setActive();
+        return;
+      }
+      api.addPanel({
+        id: panelId,
+        title: fileName,
+        component: 'fileViewer',
+        params: { filePath },
+      });
+      // Save to recent files
+      const recent = config.recentFiles || [];
+      const filtered = recent.filter((r) => r.path !== filePath);
+      updateConfig({ recentFiles: [{ path: filePath, name: fileName }, ...filtered].slice(0, 20) });
+    },
+    [config.recentFiles, updateConfig],
+  );
+
+  // Ctrl+P to open file picker, Ctrl+N to open quick launcher
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+        e.preventDefault();
+        setShowFilePicker((prev) => !prev);
+        setShowQuickLauncher(false);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        setShowQuickLauncher((prev) => !prev);
+        setShowFilePicker(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // Tab X in dockview = detach only (panel already removed by dockview)
   const handleTabClose = useCallback((_id: string) => {
@@ -115,6 +170,30 @@ function App() {
           onTabStateChange={syncTabState}
         />
       </main>
+      <QuickLauncher
+        open={showQuickLauncher}
+        onClose={() => setShowQuickLauncher(false)}
+        onLaunch={(cmd) => {
+          handleCreate({
+            title: cmd.title || '',
+            program: cmd.program,
+            cwd: cmd.cwd,
+            use_worktree: cmd.use_worktree,
+          });
+        }}
+        onSelect={openTab}
+        recentCommands={config.recentCommands || []}
+        conversations={conversations}
+      />
+      <FilePicker
+        open={showFilePicker}
+        onClose={() => setShowFilePicker(false)}
+        onOpenFile={openFile}
+        searchRoot={
+          conversations.find((c) => c.id === activeTabId)?.effective_cwd || ''
+        }
+        recentFiles={config.recentFiles || []}
+      />
       <CreateDialog
         open={showCreate}
         onClose={() => setShowCreate(false)}

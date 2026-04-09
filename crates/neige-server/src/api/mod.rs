@@ -38,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/conversations", get(list_convs))
         .route("/api/conversations", post(create_conv))
         .route("/api/browse", get(browse_dir))
+        .route("/api/file", get(read_file))
+        .route("/api/files", get(search_files))
         .route("/api/conversations/{id}", delete(delete_conv))
         .route("/api/conversations/{id}", axum::routing::patch(patch_conv))
         .route("/api/conversations/{id}/resume", post(resume_conv))
@@ -216,6 +218,170 @@ async fn browse_dir(
         entries,
         is_git_repo,
     }))
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct FileResponse {
+    path: String,
+    content: String,
+    language: String,
+}
+
+async fn read_file(
+    axum::extract::Query(q): axum::extract::Query<FileQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let expanded = if q.path.starts_with('~') {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        q.path.replacen('~', &home, 1)
+    } else {
+        q.path
+    };
+
+    let path = std::path::Path::new(&expanded);
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid path: {e}")))?;
+
+    // Safety: only read regular files, limit size to 2MB
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot stat: {e}")))?;
+    if !meta.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "not a file".to_string()));
+    }
+    if meta.len() > 2 * 1024 * 1024 {
+        return Err((StatusCode::BAD_REQUEST, "file too large (>2MB)".to_string()));
+    }
+
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot read: {e}")))?;
+
+    let language = canonical.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| match ext {
+            "rs" => "rust",
+            "ts" | "tsx" => "typescript",
+            "js" | "jsx" => "javascript",
+            "py" => "python",
+            "md" | "markdown" => "markdown",
+            "json" => "json",
+            "toml" => "toml",
+            "yaml" | "yml" => "yaml",
+            "css" => "css",
+            "html" => "html",
+            "sh" | "bash" | "zsh" => "shell",
+            "sql" => "sql",
+            "go" => "go",
+            "java" => "java",
+            "c" | "h" => "c",
+            "cpp" | "hpp" | "cc" => "cpp",
+            "rb" => "ruby",
+            "swift" => "swift",
+            "kt" => "kotlin",
+            "lua" => "lua",
+            "r" => "r",
+            "xml" => "xml",
+            "csv" => "csv",
+            "txt" => "text",
+            _ => ext,
+        })
+        .unwrap_or("text")
+        .to_string();
+
+    Ok(Json(FileResponse {
+        path: canonical.to_string_lossy().to_string(),
+        content,
+        language,
+    }))
+}
+
+#[derive(Deserialize)]
+struct SearchFilesQuery {
+    path: String,
+    query: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct FileEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+async fn search_files(
+    axum::extract::Query(q): axum::extract::Query<SearchFilesQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let expanded = if q.path.starts_with('~') {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        q.path.replacen('~', &home, 1)
+    } else {
+        q.path.clone()
+    };
+
+    let root = std::fs::canonicalize(&expanded)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid path: {e}")))?;
+
+    let query = q.query.unwrap_or_default().to_lowercase();
+    let mut results: Vec<FileEntry> = Vec::new();
+    let max_results = 50;
+
+    fn walk(
+        dir: &std::path::Path,
+        root: &std::path::Path,
+        query: &str,
+        results: &mut Vec<FileEntry>,
+        max: usize,
+        depth: usize,
+    ) {
+        if depth > 6 || results.len() >= max {
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            if results.len() >= max {
+                return;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden dirs and common large dirs
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" || name == "dist" || name == "build" {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let rel_path = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+
+            if meta.is_file() {
+                if query.is_empty() || name.to_lowercase().contains(query) || rel_path.to_lowercase().contains(query) {
+                    results.push(FileEntry {
+                        name,
+                        path: rel_path,
+                        is_dir: false,
+                    });
+                }
+            } else if meta.is_dir() {
+                walk(&path, root, query, results, max, depth + 1);
+            }
+        }
+    }
+
+    walk(&root, &root, &query, &mut results, max_results, 0);
+    // Sort: prioritize exact filename matches, then by path length
+    results.sort_by(|a, b| {
+        let a_exact = a.name.to_lowercase().contains(&query);
+        let b_exact = b.name.to_lowercase().contains(&query);
+        b_exact.cmp(&a_exact).then(a.path.len().cmp(&b.path.len()))
+    });
+
+    Ok(Json(results))
 }
 
 #[derive(Deserialize)]

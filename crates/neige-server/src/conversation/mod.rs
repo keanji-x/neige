@@ -35,6 +35,8 @@ pub struct ConvInfo {
     pub status: Status,
     pub program: String,
     pub cwd: String,
+    /// The actual working directory (worktree path if applicable, otherwise same as cwd)
+    pub effective_cwd: String,
     pub created_at: String,
     pub use_worktree: bool,
     pub worktree_branch: Option<String>,
@@ -60,12 +62,18 @@ impl Conversation {
             Some(_) => Status::Dead,
             None => Status::Detached,
         };
+        let effective_cwd = if self.use_worktree {
+            find_worktree_cwd(&self.id, &self.cwd).unwrap_or_else(|| self.cwd.clone())
+        } else {
+            self.cwd.clone()
+        };
         ConvInfo {
             id: self.id,
             title: self.title.clone(),
             status,
             program: self.program.clone(),
             cwd: self.cwd.clone(),
+            effective_cwd,
             created_at: self.created_at.to_rfc3339(),
             use_worktree: self.use_worktree,
             worktree_branch: self.worktree_branch.clone(),
