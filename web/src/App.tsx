@@ -5,6 +5,7 @@ import { TerminalPanel } from './components/TerminalPanel';
 import { CreateDialog } from './components/CreateDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { FilePicker } from './components/FilePicker';
+import { QuickLauncher } from './components/QuickLauncher';
 import { useConversations } from './hooks/useConversations';
 import { useConfig } from './hooks/useConfig';
 import type { CreateConvRequest } from './types';
@@ -15,6 +16,7 @@ function App() {
   const { config, update: updateConfig } = useConfig();
   const [showCreate, setShowCreate] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
+  const [showQuickLauncher, setShowQuickLauncher] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
@@ -94,12 +96,18 @@ function App() {
     [config.recentFiles, updateConfig],
   );
 
-  // Ctrl+P to open file picker
+  // Ctrl+P to open file picker, Ctrl+N to open quick launcher
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
         e.preventDefault();
         setShowFilePicker((prev) => !prev);
+        setShowQuickLauncher(false);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        setShowQuickLauncher((prev) => !prev);
+        setShowFilePicker(false);
       }
     };
     window.addEventListener('keydown', handler);
@@ -162,12 +170,27 @@ function App() {
           onTabStateChange={syncTabState}
         />
       </main>
+      <QuickLauncher
+        open={showQuickLauncher}
+        onClose={() => setShowQuickLauncher(false)}
+        onLaunch={(cmd) => {
+          handleCreate({
+            title: cmd.title || '',
+            program: cmd.program,
+            cwd: cmd.cwd,
+            use_worktree: cmd.use_worktree,
+          });
+        }}
+        onSelect={openTab}
+        recentCommands={config.recentCommands || []}
+        conversations={conversations}
+      />
       <FilePicker
         open={showFilePicker}
         onClose={() => setShowFilePicker(false)}
         onOpenFile={openFile}
         searchRoot={
-          conversations.find((c) => c.id === activeTabId)?.cwd || ''
+          conversations.find((c) => c.id === activeTabId)?.effective_cwd || ''
         }
         recentFiles={config.recentFiles || []}
       />

@@ -4,6 +4,8 @@ export interface ConvInfo {
   status: 'running' | 'detached' | 'dead';
   program: string;
   cwd: string;
+  /** Actual working directory (worktree path if applicable) */
+  effective_cwd: string;
   created_at: string;
   use_worktree: boolean;
   worktree_branch: string | null;
