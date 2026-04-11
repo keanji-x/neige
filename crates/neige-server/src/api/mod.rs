@@ -1,5 +1,6 @@
 use axum::{
     Router,
+    body::Body,
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
     http::StatusCode,
     response::IntoResponse,
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/config", post(save_config))
         .route("/api/layout", get(get_layout))
         .route("/api/layout", post(save_layout))
+        .route("/api/proxy", get(proxy_request))
         .route("/ws/{id}", get(ws_handler))
         .with_state(state)
 }
@@ -481,4 +483,57 @@ async fn handle_ws(
     send_task.abort();
 }
 
+// ── Web Proxy ──────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+struct ProxyQuery {
+    url: String,
+}
+
+async fn proxy_request(
+    axum::extract::Query(q): axum::extract::Query<ProxyQuery>,
+    _req: axum::http::Request<Body>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Only allow http/https
+    if !q.url.starts_with("http://") && !q.url.starts_with("https://") {
+        return Err((StatusCode::BAD_REQUEST, "url must start with http:// or https://".to_string()));
+    }
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("client error: {e}")))?;
+
+    // Forward the request
+    let upstream = client
+        .get(&q.url)
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .header("Referer", &q.url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")))?;
+
+    let status = StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // Build response, stripping frame-blocking headers
+    let mut headers = axum::http::HeaderMap::new();
+    for (name, value) in upstream.headers() {
+        let name_lower = name.as_str().to_lowercase();
+        // Strip headers that block iframe embedding
+        if name_lower == "x-frame-options"
+            || name_lower == "content-security-policy"
+            || name_lower == "content-security-policy-report-only"
+        {
+            continue;
+        }
+        headers.insert(name.clone(), value.clone());
+    }
+
+    let body = upstream
+        .bytes()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("read body: {e}")))?;
+
+    Ok((status, headers, body))
+}

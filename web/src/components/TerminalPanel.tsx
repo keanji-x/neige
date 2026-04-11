@@ -8,6 +8,7 @@ import {
 import 'dockview-core/dist/styles/dockview.css';
 import { useTerminal } from '../hooks/useTerminal';
 import { FileViewer } from './FileViewer';
+import { WebView } from './WebView';
 
 interface TerminalPanelProps {
   dockviewApiRef: React.MutableRefObject<DockviewApi | null>;
@@ -32,9 +33,15 @@ function FileViewerComponent({ params }: IDockviewPanelProps<{ filePath: string 
   return <FileViewer filePath={params.filePath} />;
 }
 
+/** Web view panel for browsing URLs */
+function WebViewComponent({ params }: IDockviewPanelProps<{ url: string }>) {
+  return <WebView url={params.url} />;
+}
+
 const components = {
   terminal: TerminalComponent,
   fileViewer: FileViewerComponent,
+  webView: WebViewComponent,
 };
 
 export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: TerminalPanelProps) {
