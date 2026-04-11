@@ -17,6 +17,7 @@ function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showQuickLauncher, setShowQuickLauncher] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
@@ -96,18 +97,51 @@ function App() {
     [config.recentFiles, updateConfig],
   );
 
-  // Ctrl+P to open file picker, Ctrl+N to open quick launcher
+  const openUrl = useCallback(
+    (url: string) => {
+      const api = dockviewApiRef.current;
+      if (!api) return;
+      const panelId = `web:${url}`;
+      const existing = api.getPanel(panelId);
+      if (existing) {
+        existing.api.setActive();
+        return;
+      }
+      // Extract domain for tab title
+      let title = url;
+      try {
+        title = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
+      } catch { /* use full url */ }
+      api.addPanel({
+        id: panelId,
+        title,
+        component: 'webView',
+        params: { url },
+      });
+    },
+    [],
+  );
+
+  // Ctrl+P to open file picker, Ctrl+N to open quick launcher, Ctrl+L to open URL input
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
         e.preventDefault();
         setShowFilePicker((prev) => !prev);
         setShowQuickLauncher(false);
+        setShowUrlInput(false);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
         e.preventDefault();
         setShowQuickLauncher((prev) => !prev);
         setShowFilePicker(false);
+        setShowUrlInput(false);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+        e.preventDefault();
+        setShowUrlInput((prev) => !prev);
+        setShowFilePicker(false);
+        setShowQuickLauncher(false);
       }
     };
     window.addEventListener('keydown', handler);
@@ -185,6 +219,34 @@ function App() {
         recentCommands={config.recentCommands || []}
         conversations={conversations}
       />
+      {showUrlInput && (
+        <div className="url-input-overlay" onClick={() => setShowUrlInput(false)}>
+          <div className="url-input-dialog" onClick={(e) => e.stopPropagation()}>
+            <input
+              className="url-input-field"
+              autoFocus
+              placeholder="Enter URL (e.g. bilibili.com)"
+              spellCheck={false}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const val = (e.target as HTMLInputElement).value.trim();
+                  if (val) {
+                    let dest = val;
+                    if (!dest.startsWith('http://') && !dest.startsWith('https://')) {
+                      dest = 'https://' + dest;
+                    }
+                    openUrl(dest);
+                    setShowUrlInput(false);
+                  }
+                }
+                if (e.key === 'Escape') {
+                  setShowUrlInput(false);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
       <FilePicker
         open={showFilePicker}
         onClose={() => setShowFilePicker(false)}

@@ -17,3 +17,5 @@ chrono = { version = "0.4", features = ["serde"] }
 portable-pty = "0.8"
 clap = { version = "4", features = ["derive"] }
 bytes = "1"
+reqwest = { version = "0.12", features = ["stream"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
