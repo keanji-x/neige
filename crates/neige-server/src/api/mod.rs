@@ -500,6 +500,7 @@ async fn proxy_request(
     }
 
     let client = reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("client error: {e}")))?;
