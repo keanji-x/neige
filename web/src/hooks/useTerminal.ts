@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { terminalBusyStore, useTerminalBusy } from './terminalBusy';
 
 const BUSY_ACTIVATE_MS = 2000;  // sustained output for 2s → go gray
 const BUSY_DEACTIVATE_MS = 1000; // 1s silence → clear gray
@@ -9,7 +10,7 @@ export function useTerminal(containerId: string | null) {
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const [busy, setBusy] = useState(false);
+  const busy = useTerminalBusy(containerId);
 
   useEffect(() => {
     if (!containerId) return;
@@ -98,13 +99,13 @@ export function useTerminal(containerId: string | null) {
       // Check if sustained: enough bytes over enough time
       const elapsed = now - windowStart;
       if (elapsed >= BUSY_ACTIVATE_MS && bytesInWindow >= BYTES_PER_SECOND_THRESHOLD * (elapsed / 1000)) {
-        setBusy(true);
+        terminalBusyStore.set(containerId, true);
       }
 
       // Fast clear: 1s silence → remove overlay
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        setBusy(false);
+        terminalBusyStore.set(containerId, false);
         bytesInWindow = 0;
       }, BUSY_DEACTIVATE_MS);
     };
@@ -233,6 +234,7 @@ export function useTerminal(containerId: string | null) {
       termRef.current = null;
       wsRef.current = null;
       fitRef.current = null;
+      terminalBusyStore.set(containerId, false);
     };
   }, [containerId]);
 

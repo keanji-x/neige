@@ -804,6 +804,12 @@
   transition: opacity 0.3s ease;
 }
 
+.conv-item.busy,
+.conv-dot-btn.busy {
+  opacity: 0.45;
+  transition: opacity 0.3s ease;
+}
+
 /* ===== Empty State ===== */
 .empty-state {
   position: absolute;
