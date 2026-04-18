@@ -28,6 +28,7 @@ export function useTerminal(containerId: string | null) {
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       cursorBlink: true,
       scrollback: 10000,
+      macOptionIsMeta: true,
     });
 
     const fitAddon = new FitAddon();
@@ -188,6 +189,30 @@ export function useTerminal(containerId: string | null) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
+    });
+
+    // Cmd+Left/Right → line start/end (browser swallows these as history nav otherwise)
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      if (!e.metaKey || e.ctrlKey || e.altKey) return true;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return true;
+      if (e.key === 'ArrowLeft') {
+        ws.send('\x01');
+        e.preventDefault();
+        return false;
+      }
+      if (e.key === 'ArrowRight') {
+        ws.send('\x05');
+        e.preventDefault();
+        return false;
+      }
+      if (e.key === 'Backspace') {
+        ws.send('\x15');
+        e.preventDefault();
+        return false;
+      }
+      return true;
     });
 
     // Resize observers
