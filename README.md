@@ -16,6 +16,7 @@ Manage multiple Claude Code conversations side-by-side in your browser with drag
 - **Port forwarding** — Configure port mappings in the web UI, automatically synced to SSH tunnel
 - **Remote access** — `neige-connect` CLI tunnels to a remote host; auto-provisions neige if not installed
 - **Layout persistence** — Split layout saved to `.neige/layout.json`, config saved to `~/.config/neige/config.json`
+- **Token auth** — First-run login URL with fragment-delivered token; session cookie (`HttpOnly; SameSite=Strict`) afterwards
 - **Works with any CLI** — Not limited to Claude Code; run `aider`, `gemini`, or any program
 
 ## Architecture
@@ -45,7 +46,40 @@ cd web && npm install && npm run build && cd ..
 cargo run
 ```
 
-Open `http://localhost:3030`
+On first launch the server prints a one-time login URL to stdout:
+
+```
+Open this URL in your browser to sign in:
+  http://127.0.0.1:3030/login#token=<…>
+```
+
+Open that URL once — the token is delivered via URL fragment (never sent to the server over the wire or written to access logs). After login, an `HttpOnly; SameSite=Strict` session cookie (30-day) is used for subsequent requests.
+
+The hash of the token is persisted at `~/.config/neige/auth.json` (mode `0600`). The plaintext token is shown only once; if you lose it, generate a new one:
+
+```bash
+cargo run -- auth rotate   # prints a new token, invalidates all sessions
+```
+
+### Binding
+
+Default bind is `127.0.0.1` — LAN peers cannot reach the port directly. To expose over LAN (relying on the token for access control):
+
+```bash
+cargo run -- --listen 0.0.0.0
+```
+
+For multi-user remote hosts, prefer `neige-connect` over `--listen 0.0.0.0`. Note that TCP loopback is *not* a per-user boundary on shared Linux hosts — other local users can reach `127.0.0.1:3030` too, and only the token stops them.
+
+### CLI flags
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--port <N>` | `3030` | Listen port |
+| `--listen <ADDR>` | `127.0.0.1` | Listen address (use `0.0.0.0` for LAN) |
+| `--allowed-origin <URL>` | — | Additional allowed Origin (repeatable); loopback is always allowed |
+| `--no-auth` | off | Disable auth entirely (DEV ONLY, forces `--listen 127.0.0.1`) |
+| `--auth-file <PATH>` | `~/.config/neige/auth.json` | Override auth file location |
 
 ## Development
 
@@ -57,7 +91,7 @@ cargo run
 cd web && npm run dev
 ```
 
-Dev server runs on `http://localhost:5173` with API proxied to `:3030`.
+Dev server runs on `http://localhost:5173` with API proxied to `:3030`. For faster iteration during frontend work, pass `--no-auth` to the backend.
 
 ## Remote Access
 
@@ -79,6 +113,8 @@ neige-connect myserver --no-provision
 
 Port mappings are configured in the web UI and automatically synced to the SSH tunnel.
 
+> **Auth note:** the SSH tunnel forwards `localhost:<local>` on your machine to `localhost:<remote>` on the target. Since the server requires a token, you need to open the remote-printed login URL once. `neige-connect` does not yet automate token retrieval — SSH into the host and either run `neige-server auth rotate` or check `~/.config/neige/auth.json` was already set up by a prior direct login.
+
 ## Project Structure
 
 ```
@@ -86,8 +122,9 @@ neige/
 ├── crates/
 │   ├── neige-server/             # Main backend
 │   │   └── src/
-│   │       ├── main.rs           # axum server, binds :3030
-│   │       ├── api/mod.rs        # REST + WebSocket routes
+│   │       ├── main.rs           # axum server, CLI, auth wiring
+│   │       ├── api/mod.rs        # REST + WebSocket routes + SSRF blocklist
+│   │       ├── auth/             # Token, session cookie, Origin check, login page
 │   │       ├── conversation/     # Session manager + persistence
 │   │       └── pty/              # PTY wrapper (portable-pty)
 │   └── neige-connect/            # Remote access CLI with auto-provisioning

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>neige — sign in</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    max-width: 420px;
+    margin: 80px auto;
+    padding: 20px;
+    line-height: 1.4;
+  }
+  h1 { font-size: 1.2rem; margin: 0 0 6px; }
+  .hint { color: #666; font-size: 0.85rem; margin: 0 0 16px; }
+  input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    box-sizing: border-box;
+    font-family: ui-monospace, monospace;
+    font-size: 0.95rem;
+    border: 1px solid #888;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+  }
+  button {
+    margin-top: 12px;
+    padding: 8px 18px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    border: 1px solid #888;
+    background: transparent;
+    color: inherit;
+    border-radius: 4px;
+  }
+  button:hover { background: rgba(128,128,128,0.1); }
+  .error { color: #c33; margin-top: 12px; min-height: 1.2em; font-size: 0.9rem; }
+  .status { color: #666; margin-top: 12px; min-height: 1.2em; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>neige</h1>
+<p class="hint">Paste the token printed on server startup, or use the provided login URL.</p>
+<input id="tok" type="password" placeholder="token" autocomplete="off" autofocus>
+<div>
+  <button id="go">Sign in</button>
+</div>
+<div id="status" class="status"></div>
+<div id="err" class="error"></div>
+<script>
+(async () => {
+  const err = document.getElementById('err');
+  const status = document.getElementById('status');
+  const inp = document.getElementById('tok');
+  const btn = document.getElementById('go');
+
+  async function submit(token) {
+    err.textContent = '';
+    if (!token) { err.textContent = 'Token is empty.'; return false; }
+    status.textContent = 'Signing in…';
+    let r;
+    try {
+      r = await fetch('/login/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+        credentials: 'same-origin',
+      });
+    } catch (e) {
+      status.textContent = '';
+      err.textContent = 'Network error: ' + e;
+      return false;
+    }
+    status.textContent = '';
+    if (r.ok) {
+      history.replaceState(null, '', '/');
+      location.assign('/');
+      return true;
+    }
+    if (r.status === 429) err.textContent = 'Too many attempts. Try again in a minute.';
+    else err.textContent = 'Invalid token.';
+    return false;
+  }
+
+  btn.addEventListener('click', () => submit(inp.value.trim()));
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') submit(inp.value.trim());
+  });
+
+  const h = window.location.hash;
+  if (h.startsWith('#token=')) {
+    const t = decodeURIComponent(h.slice(7));
+    history.replaceState(null, '', window.location.pathname);
+    await submit(t);
+  }
+})();
+</script>
+</body>
+</html>
