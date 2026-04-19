@@ -21,3 +21,6 @@ frontend/
 
 # Neige local state
 .neige/
+
+# Claude Code local state
+.claude/
