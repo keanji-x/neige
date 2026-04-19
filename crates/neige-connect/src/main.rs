@@ -66,7 +66,24 @@ fn default_control_path(host: &str) -> String {
 
 /// Ensure neige is up-to-date and running on the remote host.
 /// Always pulls latest code; rebuilds and restarts if there are changes.
+/// Wrap a string in single quotes for safe shell embedding.
+/// Embedded single quotes become `'\''` — works in bash/zsh/sh.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
+    // Forward NEIGE_PASSWORD from local env to remote process. SSH does not
+    // transport env vars by default (SendEnv requires matching AcceptEnv in
+    // sshd_config), so we inline the value into the start-up script instead.
+    // Exposure window: the value sits in the remote `bash -c` argv for the
+    // lifetime of the start-up script (seconds). After nohup spawns the
+    // server, the password only lives in the server process's environ
+    // (same-uid readable), never in its argv.
+    let password_prefix = match std::env::var("NEIGE_PASSWORD") {
+        Ok(v) if !v.is_empty() => format!("NEIGE_PASSWORD={} ", shell_single_quote(&v)),
+        _ => String::new(),
+    };
     // Source shell profile so nvm/cargo are available in non-interactive SSH
     let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done"#;
 
@@ -146,7 +163,7 @@ fi
 
 echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
 cd "$WORK_DIR"
-TERM=xterm-256color COLORTERM=truecolor nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
+TERM=xterm-256color COLORTERM=truecolor {password_prefix}nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
 disown
 NEIGE_PID=$!
 
