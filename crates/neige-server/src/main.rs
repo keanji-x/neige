@@ -15,7 +15,7 @@ use tower_http::services::ServeDir;
 #[command(name = "neige-server", about = "Web-based terminal session manager")]
 struct Cli {
     /// Port to listen on
-    #[arg(short, long, default_value = "3030")]
+    #[arg(long, default_value = "3030")]
     port: u16,
 
     /// Listen address. Defaults to 127.0.0.1 to avoid LAN exposure.
@@ -107,6 +107,24 @@ fn ensure_token(path: &std::path::Path) -> std::io::Result<(String, Option<Strin
     Ok((hash, Some(token)))
 }
 
+/// Write the provided plaintext password's hash into the auth file if it's
+/// missing or differs from the existing hash. No-op when the stored hash
+/// already matches — keeps startup idempotent across repeated runs with the
+/// same NEIGE_PASSWORD.
+fn apply_password(path: &std::path::Path, password: &str) -> std::io::Result<()> {
+    let hash = auth::hash_token(password);
+    let existing = auth::load_auth_file(path)?;
+    let up_to_date = existing.as_ref().map(|f| f.token_hash == hash).unwrap_or(false);
+    if up_to_date {
+        println!("NEIGE_PASSWORD matches existing auth file.");
+        return Ok(());
+    }
+    let file = auth::AuthFile::new(hash);
+    auth::save_auth_file(path, &file)?;
+    println!("NEIGE_PASSWORD written to {}.", path.display());
+    Ok(())
+}
+
 fn rotate_token(path: &std::path::Path) -> std::io::Result<String> {
     let token = auth::generate_token();
     let hash = auth::hash_token(&token);
@@ -128,6 +146,9 @@ fn print_login_url(bind: &str, token: &str) {
 async fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+    let cli_password = std::env::var("NEIGE_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty());
 
     // Subcommand handling (no server start)
     if let Some(cmd) = &cli.cmd {
@@ -173,6 +194,10 @@ async fn main() {
     }
     if cli.no_auth {
         eprintln!("WARNING: auth is DISABLED (--no-auth). Use only for local development.");
+        if cli_password.is_some() {
+            eprintln!("Refusing to start: NEIGE_PASSWORD has no meaning with --no-auth.");
+            std::process::exit(1);
+        }
     }
 
     let project_cwd = std::env::current_dir()
@@ -190,6 +215,12 @@ async fn main() {
         }
     } else {
         let path = auth_file_path_from(cli.auth_file.as_deref());
+        if let Some(pw) = cli_password.as_deref() {
+            if let Err(e) = apply_password(&path, pw) {
+                eprintln!("Failed to apply password: {e}");
+                std::process::exit(1);
+            }
+        }
         let (hash, fresh_token) = match ensure_token(&path) {
             Ok(v) => v,
             Err(e) => {
@@ -204,6 +235,8 @@ async fn main() {
                 format!("http://{}:{}", cli.listen, cli.port)
             };
             print_login_url(&bind, &tok);
+        } else if cli_password.is_some() {
+            println!();
         } else {
             println!();
             println!(
