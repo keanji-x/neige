@@ -139,7 +139,7 @@ else
 fi
 
 # Start server if not running
-if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/conversations 2>/dev/null; then
+if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/healthz 2>/dev/null; then
     echo "[neige] Server already running on port {port}."
     exit 0
 fi
@@ -151,9 +151,15 @@ disown
 NEIGE_PID=$!
 
 # Wait for server to be ready
+LOG="$INSTALL_DIR/neige/.neige-server.log"
 for i in $(seq 1 15); do
-    if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/conversations 2>/dev/null; then
+    if curl -sf -o /dev/null --max-time 1 http://localhost:{port}/api/healthz 2>/dev/null; then
         echo "[neige] Server is ready (pid=$NEIGE_PID, cwd=$WORK_DIR)"
+        if grep -q "Open this URL" "$LOG" 2>/dev/null; then
+            echo ""
+            echo "[neige] First-time setup — save this login URL (shown only once):"
+            grep -A 3 "Open this URL" "$LOG"
+        fi
         exit 0
     fi
     sleep 1
