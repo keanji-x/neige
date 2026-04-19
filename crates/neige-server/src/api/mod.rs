@@ -42,8 +42,13 @@ struct DirEntryInfo {
     is_dir: bool,
 }
 
+async fn healthz() -> &'static str {
+    "ok"
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/healthz", get(healthz))
         .route("/api/conversations", get(list_convs))
         .route("/api/conversations", post(create_conv))
         .route("/api/browse", get(browse_dir))
