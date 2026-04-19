@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConvInfo } from '../types';
 import { PortForwardPanel } from './PortForwardPanel';
 import type { PortForward } from './PortForwardPanel';
+import { useBusyTerminalIds } from '../hooks/terminalBusy';
 
 export type { PortForward };
 
@@ -115,6 +116,7 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(false);
   const dragging = useRef(false);
   const widthBeforeCollapse = useRef(DEFAULT_WIDTH);
+  const busyIds = useBusyTerminalIds();
 
   const toggleCollapse = useCallback(() => {
     setCollapsed((prev) => {
@@ -174,7 +176,7 @@ export function Sidebar({
   const renderItem = (c: ConvInfo) => (
     <div
       key={c.id}
-      className={`conv-item ${activeTab === c.id ? 'active' : ''} ${openTabs.includes(c.id) ? 'open' : ''}`}
+      className={`conv-item ${activeTab === c.id ? 'active' : ''} ${openTabs.includes(c.id) ? 'open' : ''} ${busyIds.has(c.id) ? 'busy' : ''}`}
       onClick={() => onSelect(c.id)}
     >
       <div className="conv-status-dot-wrapper">
@@ -244,7 +246,7 @@ export function Sidebar({
             {conversations.map((c) => (
               <button
                 key={c.id}
-                className={`conv-dot-btn ${activeTab === c.id ? 'active' : ''}`}
+                className={`conv-dot-btn ${activeTab === c.id ? 'active' : ''} ${busyIds.has(c.id) ? 'busy' : ''}`}
                 onClick={() => onSelect(c.id)}
                 title={c.title}
               >
