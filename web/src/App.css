@@ -1439,7 +1439,7 @@
 .file-viewer-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
@@ -1447,6 +1447,8 @@
 }
 
 .file-viewer-path {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-muted);
@@ -1470,6 +1472,46 @@
   flex: 1;
   overflow: auto;
   padding: 16px;
+}
+
+.file-viewer-copy {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.file-viewer-copy:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  background: var(--bg-primary);
+}
+
+.file-viewer-copy:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.file-viewer-content-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg-secondary);
+}
+
+.file-viewer-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: auto;
 }
 
 .file-viewer-loading,

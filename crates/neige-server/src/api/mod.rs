@@ -246,9 +246,24 @@ struct FileResponse {
     language: String,
 }
 
+fn image_mime(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "avif" => Some("image/avif"),
+        "apng" => Some("image/apng"),
+        _ => None,
+    }
+}
+
 async fn read_file(
     axum::extract::Query(q): axum::extract::Query<FileQuery>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     let expanded = if q.path.starts_with('~') {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
         q.path.replacen('~', &home, 1)
@@ -260,12 +275,28 @@ async fn read_file(
     let canonical = std::fs::canonicalize(path)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid path: {e}")))?;
 
-    // Safety: only read regular files, limit size to 2MB
     let meta = std::fs::metadata(&canonical)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot stat: {e}")))?;
     if !meta.is_file() {
         return Err((StatusCode::BAD_REQUEST, "not a file".to_string()));
     }
+
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Image path: serve raw bytes with image/* Content-Type (10MB cap).
+    if let Some(mime) = image_mime(ext) {
+        if meta.len() > 10 * 1024 * 1024 {
+            return Err((StatusCode::BAD_REQUEST, "image too large (>10MB)".to_string()));
+        }
+        let bytes = std::fs::read(&canonical)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot read: {e}")))?;
+        return axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, mime)
+            .body(Body::from(bytes))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("build response: {e}")));
+    }
+
+    // Text path: 2MB cap, return JSON with decoded content + language tag.
     if meta.len() > 2 * 1024 * 1024 {
         return Err((StatusCode::BAD_REQUEST, "file too large (>2MB)".to_string()));
     }
@@ -273,43 +304,41 @@ async fn read_file(
     let content = std::fs::read_to_string(&canonical)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot read: {e}")))?;
 
-    let language = canonical.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "ts" | "tsx" => "typescript",
-            "js" | "jsx" => "javascript",
-            "py" => "python",
-            "md" | "markdown" => "markdown",
-            "json" => "json",
-            "toml" => "toml",
-            "yaml" | "yml" => "yaml",
-            "css" => "css",
-            "html" => "html",
-            "sh" | "bash" | "zsh" => "shell",
-            "sql" => "sql",
-            "go" => "go",
-            "java" => "java",
-            "c" | "h" => "c",
-            "cpp" | "hpp" | "cc" => "cpp",
-            "rb" => "ruby",
-            "swift" => "swift",
-            "kt" => "kotlin",
-            "lua" => "lua",
-            "r" => "r",
-            "xml" => "xml",
-            "csv" => "csv",
-            "txt" => "text",
-            _ => ext,
-        })
-        .unwrap_or("text")
-        .to_string();
+    let language = match ext {
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" => "javascript",
+        "py" => "python",
+        "md" | "markdown" => "markdown",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "css" => "css",
+        "html" => "html",
+        "sh" | "bash" | "zsh" => "shell",
+        "sql" => "sql",
+        "go" => "go",
+        "java" => "java",
+        "c" | "h" => "c",
+        "cpp" | "hpp" | "cc" => "cpp",
+        "rb" => "ruby",
+        "swift" => "swift",
+        "kt" => "kotlin",
+        "lua" => "lua",
+        "r" => "r",
+        "xml" => "xml",
+        "csv" => "csv",
+        "txt" | "" => "text",
+        other => other,
+    }
+    .to_string();
 
     Ok(Json(FileResponse {
         path: canonical.to_string_lossy().to_string(),
         content,
         language,
-    }))
+    })
+    .into_response())
 }
 
 #[derive(Deserialize)]
