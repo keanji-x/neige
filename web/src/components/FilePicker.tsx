@@ -76,10 +76,17 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
     const lq = query.toLowerCase();
     const seenPaths = new Set<string>();
 
-    // Recent files (always shown at top, filtered by query)
+    // Recent files (always shown at top, filtered by query).
+    // Prioritize entries under the active session's cwd so the picker stays
+    // scoped to "stuff I opened from this project" even when the global
+    // recent list spans multiple repos.
     const filteredRecent = recentFiles.filter((f) =>
       !lq || f.name.toLowerCase().includes(lq) || f.path.toLowerCase().includes(lq)
     );
+    const isUnderRoot = (p: string) =>
+      !!searchRoot && (p === searchRoot || p.startsWith(searchRoot + '/'));
+    // Array.sort is stable (ES2019+), so recency order is preserved within each group.
+    filteredRecent.sort((a, b) => Number(isUnderRoot(b.path)) - Number(isUnderRoot(a.path)));
     for (const f of filteredRecent) {
       seenPaths.add(f.path);
       items.push({

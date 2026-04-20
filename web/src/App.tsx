@@ -22,12 +22,19 @@ function App() {
   const dockviewApiRef = useRef<DockviewApi | null>(null);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  // Tracks the last conversation panel that was active, so features like the
+  // file picker's search root keep working while a file/web panel is focused.
+  const [lastConvTabId, setLastConvTabId] = useState<string | null>(null);
 
   const syncTabState = useCallback(() => {
     const api = dockviewApiRef.current;
     if (!api) return;
     setOpenTabIds(api.panels.map((p) => p.id));
-    setActiveTabId(api.activePanel?.id ?? null);
+    const activeId = api.activePanel?.id ?? null;
+    setActiveTabId(activeId);
+    if (activeId && !activeId.startsWith('file:') && !activeId.startsWith('web:')) {
+      setLastConvTabId(activeId);
+    }
   }, []);
 
   const openTab = useCallback(
@@ -122,7 +129,9 @@ function App() {
     [],
   );
 
-  // Ctrl+P to open file picker, Ctrl+N to open quick launcher, Ctrl+L to open URL input
+  // Ctrl+P to open file picker, Ctrl+N to open quick launcher, Ctrl+L to open URL input,
+  // Ctrl+W to close the active file panel (skips terminals so shell delete-word still works;
+  // Mac's Cmd+W is reserved by the browser, hence Ctrl only)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
@@ -142,6 +151,14 @@ function App() {
         setShowUrlInput((prev) => !prev);
         setShowFilePicker(false);
         setShowQuickLauncher(false);
+      }
+      if (e.ctrlKey && !e.metaKey && e.key === 'w') {
+        const api = dockviewApiRef.current;
+        const active = api?.activePanel;
+        if (active && active.id.startsWith('file:')) {
+          e.preventDefault();
+          api!.removePanel(active);
+        }
       }
     };
     window.addEventListener('keydown', handler);
@@ -252,7 +269,10 @@ function App() {
         onClose={() => setShowFilePicker(false)}
         onOpenFile={openFile}
         searchRoot={
-          conversations.find((c) => c.id === activeTabId)?.effective_cwd || ''
+          conversations.find((c) => c.id === activeTabId)?.effective_cwd
+          || conversations.find((c) => c.id === lastConvTabId)?.effective_cwd
+          || conversations[0]?.effective_cwd
+          || ''
         }
         recentFiles={config.recentFiles || []}
       />
