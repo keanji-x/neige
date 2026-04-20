@@ -52,7 +52,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/conversations", get(list_convs))
         .route("/api/conversations", post(create_conv))
         .route("/api/browse", get(browse_dir))
-        .route("/api/file", get(read_file))
+        .route("/api/file", get(read_file).head(head_file))
         .route("/api/files", get(search_files))
         .route("/api/conversations/{id}", delete(delete_conv))
         .route("/api/conversations/{id}", axum::routing::patch(patch_conv))
@@ -261,26 +261,55 @@ fn image_mime(ext: &str) -> Option<&'static str> {
     }
 }
 
-async fn read_file(
-    axum::extract::Query(q): axum::extract::Query<FileQuery>,
-) -> Result<axum::response::Response, (StatusCode, String)> {
-    let expanded = if q.path.starts_with('~') {
+fn resolve_file(raw: &str) -> Result<(std::path::PathBuf, std::fs::Metadata), (StatusCode, String)> {
+    let expanded = if raw.starts_with('~') {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-        q.path.replacen('~', &home, 1)
+        raw.replacen('~', &home, 1)
     } else {
-        q.path
+        raw.to_string()
     };
-
     let path = std::path::Path::new(&expanded);
     let canonical = std::fs::canonicalize(path)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid path: {e}")))?;
-
     let meta = std::fs::metadata(&canonical)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot stat: {e}")))?;
     if !meta.is_file() {
         return Err((StatusCode::BAD_REQUEST, "not a file".to_string()));
     }
+    Ok((canonical, meta))
+}
 
+// Opaque identity for the file's current state — mtime + size. Used by the
+// frontend to cheaply check (via HEAD) whether a cached preview is stale.
+fn file_etag(meta: &std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| format!("{}.{:09}", d.as_secs(), d.subsec_nanos()))
+        .unwrap_or_else(|| "0".to_string());
+    format!("\"{}-{}\"", mtime, meta.len())
+}
+
+async fn head_file(
+    axum::extract::Query(q): axum::extract::Query<FileQuery>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let (canonical, meta) = resolve_file(&q.path)?;
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ct = image_mime(ext).unwrap_or("application/json");
+    axum::response::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, ct)
+        .header(axum::http::header::CONTENT_LENGTH, meta.len())
+        .header(axum::http::header::ETAG, file_etag(&meta))
+        .body(Body::empty())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("build response: {e}")))
+}
+
+async fn read_file(
+    axum::extract::Query(q): axum::extract::Query<FileQuery>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let (canonical, meta) = resolve_file(&q.path)?;
+    let etag = file_etag(&meta);
     let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Image path: serve raw bytes with image/* Content-Type (10MB cap).
@@ -292,6 +321,7 @@ async fn read_file(
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("cannot read: {e}")))?;
         return axum::response::Response::builder()
             .header(axum::http::header::CONTENT_TYPE, mime)
+            .header(axum::http::header::ETAG, etag)
             .body(Body::from(bytes))
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("build response: {e}")));
     }
@@ -333,12 +363,15 @@ async fn read_file(
     }
     .to_string();
 
-    Ok(Json(FileResponse {
-        path: canonical.to_string_lossy().to_string(),
-        content,
-        language,
-    })
-    .into_response())
+    Ok((
+        [(axum::http::header::ETAG, etag)],
+        Json(FileResponse {
+            path: canonical.to_string_lossy().to_string(),
+            content,
+            language,
+        }),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
