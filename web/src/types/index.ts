@@ -17,6 +17,7 @@ export interface CreateConvRequest {
   cwd: string;
   proxy?: string;
   use_worktree: boolean;
+  worktree_name?: string;
 }
 
 export interface DirEntry {

@@ -52,6 +52,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/conversations", get(list_convs))
         .route("/api/conversations", post(create_conv))
         .route("/api/browse", get(browse_dir))
+        .route("/api/is-git-repo", get(check_is_git_repo))
         .route("/api/file", get(read_file).head(head_file))
         .route("/api/files", get(search_files))
         .route("/api/conversations/{id}", delete(delete_conv))
@@ -189,6 +190,37 @@ async fn resume_conv(
 #[derive(Deserialize)]
 struct BrowseQuery {
     path: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct IsGitRepoResponse {
+    path: String,
+    is_git_repo: bool,
+}
+
+async fn check_is_git_repo(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<BrowseQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let raw = q.path.unwrap_or_default();
+    let resolved = if raw.is_empty() {
+        let mgr = state.manager.lock().await;
+        mgr.project_cwd().to_string()
+    } else if raw.starts_with('~') {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        raw.replacen('~', &home, 1)
+    } else {
+        raw
+    };
+
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid path: {e}")))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
+    let is_git_repo = crate::conversation::is_git_repo_public(&canonical_str);
+    Ok(Json(IsGitRepoResponse {
+        path: canonical_str,
+        is_git_repo,
+    }))
 }
 
 async fn browse_dir(
