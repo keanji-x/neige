@@ -105,6 +105,8 @@ pub struct CreateConvRequest {
     pub proxy: Option<String>,
     #[serde(default = "default_true")]
     pub use_worktree: bool,
+    #[serde(default)]
+    pub worktree_name: Option<String>,
 }
 
 fn default_program() -> String {
@@ -139,13 +141,39 @@ fn is_git_repo(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Validate a user-supplied worktree name.
+///
+/// Claude CLI passes this through to `git worktree add -b worktree-<name>`, so
+/// we require characters that are safe as both a shell arg and a git ref
+/// component. Reject empty strings, whitespace, and anything outside
+/// `[A-Za-z0-9._-]`.
+fn sanitize_worktree_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// Build the shell command for a program, adding claude-specific flags.
-fn build_command(program: &str, session_id: &Uuid, use_worktree: bool, is_git: bool) -> String {
+fn build_command(
+    program: &str,
+    session_id: &Uuid,
+    use_worktree: bool,
+    is_git: bool,
+    worktree_name: Option<&str>,
+) -> String {
     if program == "claude" || program.starts_with("claude ") {
         let mut parts = vec![program.to_string()];
         parts.push(format!("--session-id {}", session_id));
         if use_worktree && is_git {
-            parts.push("--worktree".to_string());
+            match worktree_name.and_then(sanitize_worktree_name) {
+                Some(name) => parts.push(format!("--worktree {}", name)),
+                None => parts.push("--worktree".to_string()),
+            }
         }
         parts.join(" ")
     } else {
@@ -337,7 +365,13 @@ impl ConversationManager {
         let is_git = is_git_repo(&cwd);
         let use_worktree = req.use_worktree && is_git;
 
-        let command = build_command(&req.program, &id, use_worktree, is_git);
+        let command = build_command(
+            &req.program,
+            &id,
+            use_worktree,
+            is_git,
+            req.worktree_name.as_deref(),
+        );
         let worktree_branch = if use_worktree && (req.program == "claude" || req.program.starts_with("claude ")) {
             Some(format!("neige/{}", id))
         } else {

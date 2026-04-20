@@ -19,7 +19,8 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
   const [cwd, setCwd] = useState('');
   const [proxy, setProxy] = useState('');
   const [useWorktree, setUseWorktree] = useState(true);
-  const [isGitRepo, setIsGitRepo] = useState(false);
+  const [worktreeName, setWorktreeName] = useState('');
+  const [worktreeError, setWorktreeError] = useState('');
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [showBrowser, setShowBrowser] = useState(false);
   // Autocomplete state
@@ -38,7 +39,8 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       setCwd('');
       setProxy(config.proxy || '');
       setUseWorktree(true);
-      setIsGitRepo(false);
+      setWorktreeName('');
+      setWorktreeError('');
       setEntries([]);
       setShowBrowser(false);
       setSuggestions([]);
@@ -53,9 +55,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       const data = await res.json();
       setCwd(data.path);
       setEntries(data.entries);
-      setIsGitRepo(data.is_git_repo ?? false);
       setShowBrowser(true);
       setShowSuggestions(false);
+      setWorktreeError('');
     }
   }, []);
 
@@ -82,7 +84,6 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       const res = await fetch(`/api/browse?path=${encodeURIComponent(parentPath)}`);
       if (res.ok) {
         const data = await res.json();
-        setIsGitRepo(data.is_git_repo ?? false);
         const filtered = (data.entries as DirEntry[])
           .filter((e) => e.is_dir && e.name.toLowerCase().startsWith(prefix))
           .slice(0, 8);
@@ -142,13 +143,47 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     }
   };
 
-  const handleSubmit = () => {
+  const effectiveProgram =
+    program === '__custom__' ? customProgram.trim() || 'claude' : program;
+  const isClaudeProgram =
+    effectiveProgram === 'claude' || effectiveProgram.startsWith('claude ');
+
+  const handleSubmit = async () => {
     const effectiveTitle =
       title.trim() ||
       cwd.split('/').filter(Boolean).pop() ||
       'untitled';
-    const effectiveProgram =
-      program === '__custom__' ? customProgram.trim() || 'claude' : program;
+    const trimmedCwd = cwd.trim();
+    const trimmedWorktreeName = worktreeName.trim();
+
+    if (useWorktree && isClaudeProgram && trimmedWorktreeName) {
+      if (!/^[A-Za-z0-9._-]+$/.test(trimmedWorktreeName)) {
+        setWorktreeError(
+          'Worktree name can only contain letters, digits, dots, underscores, and hyphens.'
+        );
+        return;
+      }
+    }
+
+    if (useWorktree && isClaudeProgram) {
+      try {
+        const res = await fetch(
+          `/api/is-git-repo?path=${encodeURIComponent(trimmedCwd)}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (!data.is_git_repo) {
+            setWorktreeError(
+              'This directory is not in a git repo — worktree is unavailable. Uncheck the box or choose a git directory.'
+            );
+            return;
+          }
+        }
+      } catch {
+        // If the check fails, fall through and let backend handle it.
+      }
+    }
+
     const proxyVal = proxy.trim();
     if (proxyVal !== (config.proxy || '')) {
       onConfigUpdate({ proxy: proxyVal || undefined });
@@ -156,9 +191,10 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     onCreate({
       title: effectiveTitle,
       program: effectiveProgram,
-      cwd: cwd.trim() || '',
+      cwd: trimmedCwd,
       proxy: proxyVal || undefined,
       use_worktree: useWorktree,
+      worktree_name: useWorktree && trimmedWorktreeName ? trimmedWorktreeName : undefined,
     });
     onClose();
   };
@@ -194,13 +230,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                     if (!PROGRAMS.includes(cmd.program)) setCustomProgram(cmd.program);
                     setCwd(cmd.cwd);
                     setUseWorktree(cmd.use_worktree);
-                    // Trigger git detection for the cwd
-                    if (cmd.cwd) {
-                      fetch(`/api/browse?path=${encodeURIComponent(cmd.cwd)}`)
-                        .then((r) => r.ok ? r.json() : null)
-                        .then((data) => { if (data) setIsGitRepo(data.is_git_repo ?? false); })
-                        .catch(() => {});
-                    }
+                    setWorktreeError('');
                   }}
                 >
                   <span className="recent-command-program">{cmd.program}</span>
@@ -253,16 +283,34 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           placeholder="e.g. http://127.0.0.1:7890"
         />
 
-        {isGitRepo && (
-          <label className="field-label checkbox-label">
-            <input
-              type="checkbox"
-              checked={useWorktree}
-              onChange={(e) => setUseWorktree(e.target.checked)}
-            />
-            <span>Use git worktree</span>
-            <span className="field-hint">Each session gets its own branch</span>
-          </label>
+        {isClaudeProgram && (
+          <>
+            <label className="field-label checkbox-label">
+              <input
+                type="checkbox"
+                checked={useWorktree}
+                onChange={(e) => {
+                  setUseWorktree(e.target.checked);
+                  setWorktreeError('');
+                }}
+              />
+              <span>Use git worktree</span>
+              <span className="field-hint">Each session gets its own branch</span>
+            </label>
+            {useWorktree && (
+              <input
+                value={worktreeName}
+                onChange={(e) => {
+                  setWorktreeName(e.target.value);
+                  setWorktreeError('');
+                }}
+                placeholder="Worktree name (optional, e.g. fix-login)"
+              />
+            )}
+            {worktreeError && (
+              <div className="field-error">{worktreeError}</div>
+            )}
+          </>
         )}
 
         <label className="field-label">Working Directory</label>
