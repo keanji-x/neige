@@ -77,6 +77,29 @@ export async function browseDir(path: string): Promise<BrowseResponse> {
   return res.json()
 }
 
+export interface NeigeConfig {
+  proxy?: string
+  [key: string]: unknown
+}
+
+export async function getConfig(): Promise<NeigeConfig> {
+  const res = await authedFetch('/api/config')
+  if (!res.ok) return {}
+  try {
+    return (await res.json()) as NeigeConfig
+  } catch {
+    return {}
+  }
+}
+
+export async function saveConfig(cfg: NeigeConfig): Promise<void> {
+  await authedFetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+}
+
 export async function createConversation(req: CreateConvRequest): Promise<ConvInfo> {
   const res = await authedFetch('/api/conversations', {
     method: 'POST',

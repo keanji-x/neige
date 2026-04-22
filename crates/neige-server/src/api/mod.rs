@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthConfig;
 use crate::conversation::{CreateConvRequest, SharedManager, neige_dir};
+use crate::pty::AttachResult;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -498,6 +499,30 @@ struct ResizeMsg {
     rows: u16,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ClientMsg {
+    /// Sent as the first frame after the WebSocket opens. `last_seq` is the
+    /// highest chunk seq the client still has in its xterm buffer; null for a
+    /// fresh attach. Server responds with Delta / Snapshot / hello depending
+    /// on how far behind the client is.
+    Attach { last_seq: Option<u64> },
+    /// PTY dimensions. Used to be encoded as an in-band "\x1b[RESIZE]{...}"
+    /// text prefix; now a first-class control message.
+    Resize { cols: u16, rows: u16 },
+}
+
+/// Framed PTY output, sent as a WebSocket Binary frame:
+///   [u64 big-endian seq][payload bytes]
+/// A `seq == 0` payload is the "snapshot / redraw" marker: client should call
+/// `term.reset()` before writing the payload. Real chunks start at seq = 1.
+fn frame(seq: u64, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + payload.len());
+    out.extend_from_slice(&seq.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
 async fn ws_handler(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -520,14 +545,18 @@ async fn ws_handler(
     let conv = mgr_lock
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, "not found".to_string()))?;
-    let pty = conv.pty.as_ref()
+    let pty = conv
+        .pty
+        .as_ref()
         .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "pty not available".to_string()))?;
-    let (rx, history) = pty.subscribe_with_history();
     let writer = pty.writer_handle();
+    // Snapshot grabbed by handle_ws itself once it sees the Attach frame; we
+    // only need the writer + something to look PTY up through `mgr` later.
+    let _ = pty;
     drop(mgr_lock);
 
     let mgr_for_ws = mgr.clone();
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, writer, mgr_for_ws, id, rx, history)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, writer, mgr_for_ws, id)))
 }
 
 async fn handle_ws(
@@ -535,23 +564,116 @@ async fn handle_ws(
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     mgr: SharedManager,
     id: Uuid,
-    mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    history: Vec<u8>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Replay history first so the client has recent context before live bytes
-    // start flowing. Atomic subscribe-with-history guarantees no duplication.
-    if !history.is_empty() && ws_tx.send(Message::Binary(history.into())).await.is_err() {
+    // Wait for the client's first frame. New clients send Attach as JSON text;
+    // legacy clients (cached old bundle) may send the in-band resize or raw
+    // input first — in that case we treat it as last_seq=None (full snapshot)
+    // and then dispatch that first frame normally.
+    let mut pending: Option<Message> = None;
+    let mut last_seq: Option<u64> = None;
+
+    match ws_rx.next().await {
+        Some(Ok(Message::Text(text))) => {
+            // Legacy resize escape from older clients — apply, then snapshot.
+            if let Some(json) = text.strip_prefix("\x1b[RESIZE]") {
+                if let Ok(resize) = serde_json::from_str::<ResizeMsg>(json) {
+                    let m = mgr.lock().await;
+                    if let Some(conv) = m.get(&id) {
+                        if let Some(pty) = &conv.pty {
+                            let _ = pty.resize(resize.cols, resize.rows);
+                        }
+                    }
+                }
+            } else {
+                match serde_json::from_str::<ClientMsg>(&text) {
+                    Ok(ClientMsg::Attach { last_seq: ls }) => last_seq = ls,
+                    Ok(ClientMsg::Resize { cols, rows }) => {
+                        let m = mgr.lock().await;
+                        if let Some(conv) = m.get(&id) {
+                            if let Some(pty) = &conv.pty {
+                                let _ = pty.resize(cols, rows);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Unrecognized text — forward as PTY stdin, like the old
+                        // protocol would've done.
+                        pending = Some(Message::Text(text));
+                    }
+                }
+            }
+        }
+        Some(Ok(other)) => {
+            // Not an attach at all — legacy or noise. Handle it as a normal
+            // inbound frame later, after we've snapshotted.
+            pending = Some(other);
+        }
+        Some(Err(_)) | None => return,
+    }
+
+    // Pull the attach payload + live receiver atomically.
+    let (mut rx, attach_result) = {
+        let mgr_lock = mgr.lock().await;
+        let Some(conv) = mgr_lock.get(&id) else {
+            return;
+        };
+        let Some(pty) = conv.pty.as_ref() else {
+            return;
+        };
+        pty.attach(last_seq)
+    };
+
+    // Prime the client.
+    let baseline_seq = match attach_result {
+        AttachResult::UpToDate { latest_seq } => latest_seq,
+        AttachResult::Delta { chunks, latest_seq } => {
+            for (seq, bytes) in chunks {
+                if ws_tx
+                    .send(Message::Binary(frame(seq, &bytes).into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            latest_seq
+        }
+        AttachResult::Snapshot { bytes, latest_seq } => {
+            // seq=0 = "reset then write this payload".
+            if ws_tx
+                .send(Message::Binary(frame(0, &bytes).into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            latest_seq
+        }
+    };
+
+    // Hello tells the client what seq to treat as its new baseline.
+    let hello = serde_json::json!({ "type": "hello", "last_seq": baseline_seq });
+    if ws_tx
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .is_err()
+    {
         return;
     }
 
-    // Task: PTY raw output → WebSocket binary
+    // Live forwarding task — writes every new (seq, bytes) tuple as a framed
+    // binary frame.
     let send_task = tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(data) => {
-                    if ws_tx.send(Message::Binary(data.into())).await.is_err() {
+                Ok((seq, data)) => {
+                    if ws_tx
+                        .send(Message::Binary(frame(seq, &data).into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -564,36 +686,69 @@ async fn handle_ws(
         }
     });
 
-    // Task: WebSocket input → PTY stdin
-    while let Some(Ok(msg)) = ws_rx.next().await {
-        match msg {
-            Message::Text(text) => {
-                // Check for resize control message
-                if let Some(json) = text.strip_prefix("\x1b[RESIZE]") {
-                    if let Ok(resize) = serde_json::from_str::<ResizeMsg>(json) {
-                        let mgr = mgr.lock().await;
-                        if let Some(conv) = mgr.get(&id) {
-                            if let Some(pty) = &conv.pty {
-                            let _ = pty.resize(resize.cols, resize.rows);
-                        }
-                        }
-                    }
-                    continue;
-                }
-                let mut w = writer.lock().unwrap();
-                let _ = w.write_all(text.as_bytes());
-                let _ = w.flush();
-            }
-            Message::Binary(data) => {
-                let mut w = writer.lock().unwrap();
-                let _ = w.write_all(&data);
-                let _ = w.flush();
-            }
-            _ => {}
+    // Consume the queued-up first-frame leftover (legacy client path) and
+    // then keep reading inbound frames normally.
+    let handle_inbound = async {
+        if let Some(msg) = pending.take() {
+            process_inbound(msg, &mgr, &id, &writer).await;
         }
-    }
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            process_inbound(msg, &mgr, &id, &writer).await;
+        }
+    };
+    handle_inbound.await;
 
     send_task.abort();
+}
+
+/// One-shot dispatch for an inbound WebSocket message after the attach
+/// handshake. Splits JSON control frames (resize) from raw stdin bytes and
+/// keeps the legacy `\x1b[RESIZE]` text prefix working for stale clients.
+async fn process_inbound(
+    msg: Message,
+    mgr: &SharedManager,
+    id: &Uuid,
+    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
+) {
+    match msg {
+        Message::Text(text) => {
+            if let Some(json) = text.strip_prefix("\x1b[RESIZE]") {
+                if let Ok(resize) = serde_json::from_str::<ResizeMsg>(json) {
+                    let m = mgr.lock().await;
+                    if let Some(conv) = m.get(id) {
+                        if let Some(pty) = &conv.pty {
+                            let _ = pty.resize(resize.cols, resize.rows);
+                        }
+                    }
+                }
+                return;
+            }
+            match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(ClientMsg::Resize { cols, rows }) => {
+                    let m = mgr.lock().await;
+                    if let Some(conv) = m.get(id) {
+                        if let Some(pty) = &conv.pty {
+                            let _ = pty.resize(cols, rows);
+                        }
+                    }
+                }
+                // A second Attach frame is a no-op; client shouldn't send one.
+                Ok(ClientMsg::Attach { .. }) => {}
+                Err(_) => {
+                    // Unknown text → treat as stdin, preserving old behavior.
+                    let mut w = writer.lock().unwrap();
+                    let _ = w.write_all(text.as_bytes());
+                    let _ = w.flush();
+                }
+            }
+        }
+        Message::Binary(data) => {
+            let mut w = writer.lock().unwrap();
+            let _ = w.write_all(&data);
+            let _ = w.flush();
+        }
+        _ => {}
+    }
 }
 
 // ── Web Proxy ──────────────────────────────────────────────────────
