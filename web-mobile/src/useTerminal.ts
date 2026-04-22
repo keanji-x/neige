@@ -5,10 +5,19 @@ import { FitAddon } from '@xterm/addon-fit'
 import { cardActivity } from './cardActivity'
 
 /**
- * Mobile-tuned terminal hook. Mirrors the desktop WS/resize protocol and also
- * exposes the live `Terminal` instance via `termRef` so peripheral UI (scroll
- * edge, jump-to-bottom FAB, overview thumbnail) can read/drive the viewport
- * without owning the xterm itself.
+ * Mobile-tuned terminal hook. The xterm instance lives for the whole lifetime
+ * of the hook; the WebSocket comes and goes underneath it — network blips,
+ * laptop sleep, or 30-second tunnel idle timeouts cost us nothing but a quick
+ * delta replay on reconnect.
+ *
+ * Wire protocol (see crates/neige-server/src/api/mod.rs `handle_ws`):
+ *   Client → server (text JSON):
+ *     {"type":"attach","last_seq":<number|null>}   // first frame
+ *     {"type":"resize","cols":C,"rows":R}
+ *   Client → server (binary): raw stdin.
+ *   Server → client (binary): [u64 BE seq][payload]. seq=0 = "reset+write".
+ *   Server → client (text JSON): {"type":"hello","last_seq":N} after the
+ *     initial prime, so the client knows its new baseline.
  */
 export interface UseTerminalApi {
   sendText: (s: string) => void
@@ -18,6 +27,11 @@ export interface UseTerminalApi {
   termRef: RefObject<Terminal | null>
 }
 
+function readU64BE(bytes: Uint8Array, offset: number): bigint {
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8)
+  return view.getBigUint64(0, false)
+}
+
 export function useTerminal(
   containerRef: RefObject<HTMLDivElement | null>,
   sessionId: string | null,
@@ -25,6 +39,7 @@ export function useTerminal(
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const lastSeqRef = useRef<bigint | null>(null)
   const [status, setStatus] = useState<UseTerminalApi['status']>('connecting')
   const [busy, setBusy] = useState(false)
 
@@ -62,7 +77,7 @@ export function useTerminal(
     const sendResize = (cols: number, rows: number) => {
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN && cols > 0 && rows > 0) {
-        ws.send('\x1b[RESIZE]' + JSON.stringify({ cols, rows }))
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }))
         lastCols = cols
         lastRows = rows
       }
@@ -90,10 +105,7 @@ export function useTerminal(
     let idleTimer: ReturnType<typeof setTimeout>
 
     const trackOutput = (n: number) => {
-      // Share raw output events with the cross-card activity store; that's
-      // what drives the per-card "unread" counter in the Overview.
       cardActivity.onOutput(sessionId)
-
       const now = Date.now()
       if (now - lastOutputTime > 1000) {
         bytesInWindow = 0
@@ -112,47 +124,59 @@ export function useTerminal(
       }, DEACTIVATE_MS)
     }
 
-    let writeBuf: Uint8Array[] = []
+    let writeBuf: { seq: bigint; bytes: Uint8Array; reset: boolean }[] = []
     let rafId = 0
+
+    const flush = () => {
+      rafId = 0
+      const chunks = writeBuf
+      writeBuf = []
+      for (const c of chunks) {
+        if (c.reset) term.reset()
+        term.write(c.bytes)
+        // Only real chunks advance the baseline; snapshots update via "hello".
+        if (!c.reset && c.seq > 0n) lastSeqRef.current = c.seq
+      }
+    }
 
     const wireWs = (ws: WebSocket) => {
       ws.onmessage = (e) => {
-        let chunk: Uint8Array
-        if (e.data instanceof ArrayBuffer) {
-          chunk = new Uint8Array(e.data)
-        } else {
-          chunk = new TextEncoder().encode(e.data)
+        if (typeof e.data === 'string') {
+          try {
+            const msg = JSON.parse(e.data)
+            if (msg && msg.type === 'hello' && typeof msg.last_seq === 'number') {
+              lastSeqRef.current = BigInt(msg.last_seq)
+            }
+          } catch {
+            // ignore bad JSON
+          }
+          return
         }
-        writeBuf.push(chunk)
-        trackOutput(chunk.byteLength)
-        if (!rafId) {
-          rafId = requestAnimationFrame(() => {
-            const chunks = writeBuf
-            writeBuf = []
-            rafId = 0
-            for (const c of chunks) term.write(c)
-          })
-        }
+        if (!(e.data instanceof ArrayBuffer) || e.data.byteLength < 8) return
+        const buf = new Uint8Array(e.data)
+        const seq = readU64BE(buf, 0)
+        const payload = buf.subarray(8)
+        writeBuf.push({ seq, bytes: payload, reset: seq === 0n })
+        trackOutput(payload.byteLength)
+        if (!rafId) rafId = requestAnimationFrame(flush)
       }
       ws.onopen = () => {
         reconnectAttempts = 0
         setStatus('open')
+        // Attach handshake: tells the server which chunks we already have.
+        // A null last_seq means "fresh" and the server will send a full
+        // snapshot.
+        const ls = lastSeqRef.current
+        ws.send(
+          JSON.stringify({
+            type: 'attach',
+            last_seq: ls === null ? null : Number(ls),
+          }),
+        )
+        // Fit & push current dimensions so the PTY matches what we render.
         fit.fit()
         const dims = fit.proposeDimensions()
-        if (dims) {
-          sendResize(dims.cols, dims.rows)
-          // Cold-join nudge: many TUIs (Claude Code, less, vim) only redraw on
-          // SIGWINCH. A second resize 300ms later forces a repaint so newly
-          // attached clients don't stare at a blank screen until the next tick.
-          setTimeout(() => {
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
-              // Perturb by 1 col so the server sees a distinct value, then
-              // restore — that makes the SIGWINCH real, not a no-op.
-              sendResize(Math.max(2, dims.cols - 1), dims.rows)
-              setTimeout(() => sendResize(dims.cols, dims.rows), 80)
-            }
-          }, 300)
-        }
+        if (dims) sendResize(dims.cols, dims.rows)
       }
       ws.onclose = (ev) => {
         if (disposed || ev.code === 1000) {
@@ -161,7 +185,6 @@ export function useTerminal(
           return
         }
         setStatus('reconnecting')
-        term.write('\r\n\x1b[33m[connection lost — reconnecting...]\x1b[0m\r\n')
         scheduleReconnect()
       }
     }

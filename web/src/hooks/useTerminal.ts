@@ -6,10 +6,25 @@ import { terminalBusyStore, useTerminalBusy } from './terminalBusy';
 const BUSY_ACTIVATE_MS = 2000;  // sustained output for 2s → go gray
 const BUSY_DEACTIVATE_MS = 1000; // 1s silence → clear gray
 
+/**
+ * Framed WS protocol (see crates/neige-server/src/api/mod.rs handle_ws):
+ *   client → server text JSON:
+ *     {"type":"attach","last_seq":<number|null>}
+ *     {"type":"resize","cols":C,"rows":R}
+ *   client → server binary: raw stdin
+ *   server → client binary: [u64 BE seq][payload]; seq=0 = reset+write
+ *   server → client text JSON: {"type":"hello","last_seq":N}
+ */
+function readU64BE(bytes: Uint8Array, offset: number): bigint {
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+  return view.getBigUint64(0, false);
+}
+
 export function useTerminal(containerId: string | null) {
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const lastSeqRef = useRef<bigint | null>(null);
   const busy = useTerminalBusy(containerId);
 
   useEffect(() => {
@@ -51,7 +66,7 @@ export function useTerminal(containerId: string | null) {
     const sendResize = (cols: number, rows: number) => {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN && cols > 0 && rows > 0) {
-        ws.send('\x1b[RESIZE]' + JSON.stringify({ cols, rows }));
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         lastCols = cols;
         lastRows = rows;
       }
@@ -73,7 +88,7 @@ export function useTerminal(containerId: string | null) {
 
     // Batch incoming PTY output per animation frame to avoid
     // cursor jitter during TUI redraws (e.g. Claude Code SIGWINCH)
-    let writeBuf: Uint8Array[] = [];
+    let writeBuf: { seq: bigint; bytes: Uint8Array; reset: boolean }[] = [];
     let rafId = 0;
 
     // Activity tracking:
@@ -110,25 +125,38 @@ export function useTerminal(containerId: string | null) {
       }, BUSY_DEACTIVATE_MS);
     };
 
+    const flush = () => {
+      rafId = 0;
+      const chunks = writeBuf;
+      writeBuf = [];
+      for (const c of chunks) {
+        if (c.reset) term.reset();
+        term.write(c.bytes);
+        if (!c.reset && c.seq > 0n) lastSeqRef.current = c.seq;
+      }
+    };
+
     const wireWs = (ws: WebSocket) => {
       ws.onmessage = (e) => {
-        let chunk: Uint8Array;
-        if (e.data instanceof ArrayBuffer) {
-          chunk = new Uint8Array(e.data);
-        } else {
-          chunk = new TextEncoder().encode(e.data);
-        }
-        writeBuf.push(chunk);
-        trackOutput(chunk.byteLength);
-        if (!rafId) {
-          rafId = requestAnimationFrame(() => {
-            const chunks = writeBuf;
-            writeBuf = [];
-            rafId = 0;
-            for (const c of chunks) {
-              term.write(c);
+        if (typeof e.data === 'string') {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg && msg.type === 'hello' && typeof msg.last_seq === 'number') {
+              lastSeqRef.current = BigInt(msg.last_seq);
             }
-          });
+          } catch {
+            // ignore bad JSON
+          }
+          return;
+        }
+        if (!(e.data instanceof ArrayBuffer) || e.data.byteLength < 8) return;
+        const buf = new Uint8Array(e.data);
+        const seq = readU64BE(buf, 0);
+        const payload = buf.subarray(8);
+        writeBuf.push({ seq, bytes: payload, reset: seq === 0n });
+        trackOutput(payload.byteLength);
+        if (!rafId) {
+          rafId = requestAnimationFrame(flush);
         }
       };
 
@@ -143,13 +171,22 @@ export function useTerminal(containerId: string | null) {
           term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
           return;
         }
-        term.write('\r\n\x1b[33m[connection lost — reconnecting...]\x1b[0m\r\n');
         scheduleReconnect();
       };
 
       ws.onopen = () => {
         reconnectAttempts = 0;
-        // Initial fit + resize
+        // Attach handshake — tells the server how much of the stream we
+        // already have so it can delta-replay instead of dumping full
+        // history (and duplicating what's already in our xterm buffer).
+        const ls = lastSeqRef.current;
+        ws.send(
+          JSON.stringify({
+            type: 'attach',
+            last_seq: ls === null ? null : Number(ls),
+          }),
+        );
+        // Push dimensions so the PTY matches what we render.
         fitAddon.fit();
         const dims = fitAddon.proposeDimensions();
         if (dims) {
@@ -187,9 +224,7 @@ export function useTerminal(containerId: string | null) {
     // Forward keyboard input
     term.onData((data) => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
     });
 
     // Cmd+Left/Right → line start/end (browser swallows these as history nav otherwise)

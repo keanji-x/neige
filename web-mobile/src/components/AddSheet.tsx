@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ConvInfo, CreateConvRequest } from '../types'
+import { getConfig, saveConfig } from '../api'
 import { DirPicker } from './DirPicker'
 
 interface Props {
@@ -118,9 +119,27 @@ function NewSessionForm({
   const [cwd, setCwd] = useState('')
   const [useWorktree, setUseWorktree] = useState(true)
   const [worktreeName, setWorktreeName] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [savedProxy, setSavedProxy] = useState('')
   const [pending, setPending] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [browsing, setBrowsing] = useState(false)
+
+  // Prefill proxy from the server-side config so most users don't need to
+  // retype it every time. We remember whatever they last saved and diff on
+  // submit to decide whether to push an update.
+  useEffect(() => {
+    let cancelled = false
+    getConfig().then((cfg) => {
+      if (cancelled) return
+      const p = cfg.proxy ?? ''
+      setProxy(p)
+      setSavedProxy(p)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Suggest cwds we've seen used before so user rarely has to type a path.
   const cwdSuggestions = Array.from(
@@ -135,12 +154,19 @@ function NewSessionForm({
     setPending(true)
     setErr(null)
     try {
+      const proxyVal = proxy.trim()
+      if (proxyVal !== savedProxy) {
+        // Persist so the next session picks the same proxy by default.
+        await saveConfig({ proxy: proxyVal || undefined })
+        setSavedProxy(proxyVal)
+      }
       await onCreate({
         title: title.trim(),
         program: 'claude',
         cwd: cwd.trim(),
         use_worktree: useWorktree,
         worktree_name: worktreeName.trim() || undefined,
+        proxy: proxyVal || undefined,
       })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -242,6 +268,20 @@ function NewSessionForm({
           />
         </label>
       )}
+
+      <label className="field">
+        <span className="field-label">HTTP 代理（可选）</span>
+        <input
+          className="field-input field-mono"
+          type="url"
+          value={proxy}
+          placeholder="http://127.0.0.1:10809"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          onChange={(e) => setProxy(e.target.value)}
+        />
+      </label>
 
       {err && <div className="form-err">{err}</div>}
 
