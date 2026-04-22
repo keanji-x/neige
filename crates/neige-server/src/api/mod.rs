@@ -522,12 +522,12 @@ async fn ws_handler(
         .ok_or((StatusCode::NOT_FOUND, "not found".to_string()))?;
     let pty = conv.pty.as_ref()
         .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "pty not available".to_string()))?;
-    let rx = pty.tx.subscribe();
+    let (rx, history) = pty.subscribe_with_history();
     let writer = pty.writer_handle();
     drop(mgr_lock);
 
     let mgr_for_ws = mgr.clone();
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, writer, mgr_for_ws, id, rx)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, writer, mgr_for_ws, id, rx, history)))
 }
 
 async fn handle_ws(
@@ -536,8 +536,15 @@ async fn handle_ws(
     mgr: SharedManager,
     id: Uuid,
     mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    history: Vec<u8>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Replay history first so the client has recent context before live bytes
+    // start flowing. Atomic subscribe-with-history guarantees no duplication.
+    if !history.is_empty() && ws_tx.send(Message::Binary(history.into())).await.is_err() {
+        return;
+    }
 
     // Task: PTY raw output → WebSocket binary
     let send_task = tokio::spawn(async move {

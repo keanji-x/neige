@@ -26,6 +26,10 @@ struct Cli {
     #[arg(long)]
     static_dir: Option<String>,
 
+    /// Path to web-mobile/dist directory (auto-detected if not set)
+    #[arg(long)]
+    mobile_static_dir: Option<String>,
+
     /// Additional allowed Origin (e.g. https://neige.example.com). Can be repeated.
     #[arg(long = "allowed-origin")]
     allowed_origins: Vec<String>,
@@ -64,7 +68,7 @@ enum AuthCmd {
     },
 }
 
-fn resolve_static_dir(cli_path: Option<&str>) -> std::path::PathBuf {
+fn resolve_dist_dir(cli_path: Option<&str>, subdir: &str) -> std::path::PathBuf {
     if let Some(p) = cli_path {
         return std::path::PathBuf::from(p);
     }
@@ -72,7 +76,7 @@ fn resolve_static_dir(cli_path: Option<&str>) -> std::path::PathBuf {
         if let Some(bin_dir) = exe.parent() {
             let workspace = bin_dir.parent().and_then(|p| p.parent());
             if let Some(ws) = workspace {
-                let candidate = ws.join("web/dist");
+                let candidate = ws.join(subdir);
                 if candidate.exists() {
                     return candidate;
                 }
@@ -85,7 +89,15 @@ fn resolve_static_dir(cli_path: Option<&str>) -> std::path::PathBuf {
         .unwrap()
         .parent()
         .unwrap();
-    workspace_dir.join("web/dist")
+    workspace_dir.join(subdir)
+}
+
+fn resolve_static_dir(cli_path: Option<&str>) -> std::path::PathBuf {
+    resolve_dist_dir(cli_path, "web/dist")
+}
+
+fn resolve_mobile_static_dir(cli_path: Option<&str>) -> std::path::PathBuf {
+    resolve_dist_dir(cli_path, "web-mobile/dist")
 }
 
 fn auth_file_path_from(cli_override: Option<&str>) -> std::path::PathBuf {
@@ -260,6 +272,7 @@ async fn main() {
     };
 
     let static_dir = resolve_static_dir(cli.static_dir.as_deref());
+    let mobile_static_dir = resolve_mobile_static_dir(cli.mobile_static_dir.as_deref());
 
     // All routes share AppState; AuthConfig is extracted via FromRef<AppState>.
     let public: Router<api::AppState> = Router::new()
@@ -271,6 +284,7 @@ async fn main() {
     let app = Router::new()
         .merge(public)
         .merge(api::router())
+        .nest_service("/m", ServeDir::new(&mobile_static_dir))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(axum::middleware::from_fn_with_state(
             auth_cfg.clone(),
@@ -286,6 +300,7 @@ async fn main() {
     println!("neige listening on http://{}", addr);
     println!("project dir: {project_cwd}");
     println!("static dir: {}", static_dir.display());
+    println!("mobile static dir: {}", mobile_static_dir.display());
     if cli.listen == "0.0.0.0" {
         eprintln!(
             "WARNING: listening on 0.0.0.0 — anyone who can reach this port can attempt login."
