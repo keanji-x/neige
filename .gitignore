@@ -4,6 +4,8 @@
 # Node
 web/node_modules
 web/dist
+web-mobile/node_modules
+web-mobile/dist
 
 # Old frontend
 frontend/

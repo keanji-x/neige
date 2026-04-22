@@ -1,8 +1,41 @@
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tracing::debug;
+
+/// Ring-buffered raw PTY output. New WebSocket clients get a snapshot of this
+/// on connect so they can see recent context instead of a blank screen.
+const HISTORY_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+struct History {
+    buf: VecDeque<u8>,
+    max: usize,
+}
+
+impl History {
+    fn new(max: usize) -> Self {
+        Self {
+            buf: VecDeque::with_capacity(max),
+            max,
+        }
+    }
+    fn push(&mut self, data: &[u8]) {
+        self.buf.extend(data.iter().copied());
+        if self.buf.len() > self.max {
+            let excess = self.buf.len() - self.max;
+            self.buf.drain(..excess);
+        }
+    }
+    fn snapshot(&self) -> Vec<u8> {
+        let (a, b) = self.buf.as_slices();
+        let mut out = Vec::with_capacity(a.len() + b.len());
+        out.extend_from_slice(a);
+        out.extend_from_slice(b);
+        out
+    }
+}
 
 /// A session backed by a real PTY — streams raw escape sequences.
 pub struct PtySession {
@@ -11,6 +44,7 @@ pub struct PtySession {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     /// Raw PTY output is broadcast here.
     pub tx: broadcast::Sender<Vec<u8>>,
+    history: Arc<Mutex<History>>,
     _reader_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -53,15 +87,25 @@ impl PtySession {
 
         let (tx, _) = broadcast::channel::<Vec<u8>>(256);
         let tx_clone = tx.clone();
+        let history = Arc::new(Mutex::new(History::new(HISTORY_MAX_BYTES)));
+        let history_clone = history.clone();
 
-        // Background thread: read raw PTY output → broadcast
+        // Background thread: read raw PTY output → append to history → broadcast.
+        // Append + broadcast happen under the same lock so `subscribe_with_history`
+        // is race-free: holding the lock freezes the reader, the snapshot captures
+        // everything sent-so-far, and any subsequent chunk goes to subscribers via
+        // the broadcast we just registered.
         let handle = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let _ = tx_clone.send(buf[..n].to_vec());
+                        let chunk = buf[..n].to_vec();
+                        if let Ok(mut h) = history_clone.lock() {
+                            h.push(&chunk);
+                            let _ = tx_clone.send(chunk);
+                        }
                     }
                     Err(_) => break,
                 }
@@ -75,8 +119,20 @@ impl PtySession {
             writer: Arc::new(Mutex::new(writer)),
             child: Arc::new(Mutex::new(child)),
             tx,
+            history,
             _reader_handle: Some(handle),
         })
+    }
+
+    /// Atomically subscribe to the live broadcast and snapshot the history buffer.
+    /// The caller should send the snapshot to the client before forwarding live
+    /// bytes from the receiver — that way new clients see recent context and
+    /// then live output without duplication or gaps.
+    pub fn subscribe_with_history(&self) -> (broadcast::Receiver<Vec<u8>>, Vec<u8>) {
+        let history = self.history.lock().expect("history poisoned");
+        let rx = self.tx.subscribe();
+        let snapshot = history.snapshot();
+        (rx, snapshot)
     }
 
     /// Get a clone of the writer Arc for direct PTY writes without holding the manager lock.
