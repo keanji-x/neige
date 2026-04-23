@@ -1,4 +1,5 @@
 use crate::pty::PtySession;
+use crate::tmux;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -383,7 +384,24 @@ impl ConversationManager {
         tracing::info!(
             "spawning session {id}: command={command:?}, cwd={cwd:?}, is_git={is_git}, use_worktree={use_worktree}"
         );
-        let pty = PtySession::spawn(&command, &cwd, 200, 50, &env)?;
+        // Create the tmux session holding the actual program; then spawn a
+        // PTY running `tmux attach-session` — that's the only thing neige
+        // directly owns. When this process dies the attach client dies but
+        // the inner program keeps running.
+        let created = tmux::create_session(&id, &command, &cwd, &env)?;
+        let attach = tmux::attach_command(&id);
+        let pty = match PtySession::spawn(&attach, &cwd, 200, 50, &[]) {
+            Ok(pty) => pty,
+            Err(e) => {
+                // Don't leave the tmux session orphaned when our own PTY
+                // allocation fails. Only rolls back sessions we just made;
+                // a pre-existing session (created = false) is not ours to kill.
+                if created {
+                    tmux::kill_session(&id);
+                }
+                return Err(e);
+            }
+        };
 
         let conv = Conversation {
             id,
@@ -423,7 +441,22 @@ impl ConversationManager {
             conv.cwd.clone()
         };
 
-        let pty = PtySession::spawn(&command, &cwd, 200, 50, &env)?;
+        // Idempotent: if the tmux session from before the neige-server
+        // restart is still alive, create_session short-circuits and the
+        // `command`/env args are ignored — so the user reattaches to the
+        // same live claude. If the session is gone, this spawns a fresh
+        // one running the resume command.
+        let created = tmux::create_session(&conv.id, &command, &cwd, &env)?;
+        let attach = tmux::attach_command(&conv.id);
+        let pty = match PtySession::spawn(&attach, &cwd, 200, 50, &[]) {
+            Ok(pty) => pty,
+            Err(e) => {
+                if created {
+                    tmux::kill_session(&conv.id);
+                }
+                return Err(e);
+            }
+        };
         conv.pty = Some(pty);
 
         save_session(&conv.meta(), &self.project_cwd);
@@ -452,6 +485,10 @@ impl ConversationManager {
 
     /// Remove a conversation and clean up its session file.
     pub fn remove(&mut self, id: &Uuid) {
+        // Kill the tmux session first so the inner program stops. Dropping
+        // the Conversation only kills our attach client, which would leave
+        // the tmux session running orphaned.
+        tmux::kill_session(id);
         remove_session_file(id, &self.project_cwd);
         self.convs.remove(id);
     }
