@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod conversation;
 mod pty;
+mod tmux;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -210,6 +211,13 @@ async fn main() {
             eprintln!("Refusing to start: NEIGE_PASSWORD has no meaning with --no-auth.");
             std::process::exit(1);
         }
+    }
+
+    // Verify tmux is available and pin our config. Every session runs inside
+    // a headless tmux on a private socket so it survives neige-server restart.
+    if let Err(e) = tmux::init() {
+        eprintln!("{e}");
+        std::process::exit(1);
     }
 
     let project_cwd = std::env::current_dir()
