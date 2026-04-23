@@ -15,11 +15,17 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Paths */
+    "paths": {
+      "@neige/shared": ["../packages/neige-web-shared/src/index.ts"],
+      "@neige/shared/*": ["../packages/neige-web-shared/src/*"]
+    },
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src", "../packages/neige-web-shared/src"]
 }
