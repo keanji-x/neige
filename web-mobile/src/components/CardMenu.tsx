@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Sheet, SheetContent } from '@neige/shared'
+import { Box, Button, Callout, Flex, Text, TextField } from '@radix-ui/themes'
 import type { ConvInfo } from '../types'
 
 interface Props {
@@ -9,15 +10,6 @@ interface Props {
   onClose: () => void
 }
 
-/**
- * Bottom-sheet action menu for a single card. Three actions:
- *   - Rename: swap the sheet body to an inline text input; on save PATCHes the
- *     conversation title.
- *   - Delete: destructive — kills the PTY and removes the session server-side.
- *     Two-step: first tap turns the row red and asks for confirmation.
- *   - Copy ID: clipboard API with a prompt() fallback for non-secure contexts
- *     (HTTP LAN access often isn't considered secure).
- */
 export function CardMenu({ conv, onRename, onDelete, onClose }: Props) {
   const [mode, setMode] = useState<'menu' | 'rename' | 'confirmDelete'>('menu')
   const [newTitle, setNewTitle] = useState(conv.title)
@@ -65,109 +57,143 @@ export function CardMenu({ conv, onRename, onDelete, onClose }: Props) {
         onClose()
       }, 800)
     } catch {
-      // Insecure context or API unavailable — fall back to prompt
       prompt('复制这个 ID：', conv.id)
       onClose()
     }
   }
 
   return (
-    <Sheet
-      open
-      onOpenChange={(o) => {
-        if (!o) onClose()
-      }}
-    >
-      <SheetContent className="p-0">
-        <div className="sheet sheet-menu">
-        <header className="sheet-head">
-          <div className="sheet-menu-head">
-            <div className="sheet-menu-title">{conv.title}</div>
-            <div className="sheet-menu-id">{conv.id.slice(0, 8)}…</div>
-          </div>
-          <button className="link-btn" onClick={onClose}>
-            取消
-          </button>
-        </header>
+    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
+      <SheetContent>
+        <Flex direction="column" gap="3">
+          <Flex justify="between" align="start" gap="3">
+            <Box style={{ minWidth: 0 }}>
+              <Text as="div" size="3" weight="medium" truncate>
+                {conv.title}
+              </Text>
+              <Text as="div" size="1" color="gray" style={{ fontFamily: 'var(--code-font-family)' }}>
+                {conv.id.slice(0, 8)}…
+              </Text>
+            </Box>
+            <Button variant="ghost" color="gray" onClick={onClose}>
+              取消
+            </Button>
+          </Flex>
 
-        {mode === 'menu' && (
-          <div className="menu-body">
-            <button className="menu-row" onClick={() => setMode('rename')}>
-              <span className="menu-ico">✎</span>
-              <span>重命名</span>
-            </button>
-            <button className="menu-row" onClick={copyId}>
-              <span className="menu-ico">⧉</span>
-              <span>{copied ? '已复制' : '复制 session ID'}</span>
-            </button>
-            <button
-              className="menu-row menu-row-danger"
-              onClick={() => setMode('confirmDelete')}
-            >
-              <span className="menu-ico">✕</span>
-              <span>删除 session（不可撤销）</span>
-            </button>
-          </div>
-        )}
+          {mode === 'menu' && (
+            <Flex direction="column" gap="2" mt="2">
+              <MenuRow icon="✎" onClick={() => setMode('rename')}>
+                重命名
+              </MenuRow>
+              <MenuRow icon="⧉" onClick={copyId}>
+                {copied ? '已复制' : '复制 session ID'}
+              </MenuRow>
+              <MenuRow icon="✕" danger onClick={() => setMode('confirmDelete')}>
+                删除 session（不可撤销）
+              </MenuRow>
+            </Flex>
+          )}
 
-        {mode === 'rename' && (
-          <form className="menu-rename" onSubmit={doRename}>
-            <input
-              className="field-input"
-              value={newTitle}
-              autoFocus
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              onChange={(e) => setNewTitle(e.target.value)}
-            />
-            {err && <div className="form-err">{err}</div>}
-            <div className="menu-actions">
-              <button
-                type="button"
-                className="menu-btn menu-btn-ghost"
-                onClick={() => setMode('menu')}
-                disabled={pending}
-              >
-                返回
-              </button>
-              <button type="submit" className="menu-btn menu-btn-primary" disabled={pending}>
-                {pending ? '保存中…' : '保存'}
-              </button>
-            </div>
-          </form>
-        )}
+          {mode === 'rename' && (
+            <form onSubmit={doRename}>
+              <Flex direction="column" gap="3">
+                <TextField.Root
+                  size="3"
+                  value={newTitle}
+                  autoFocus
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                />
+                {err && (
+                  <Callout.Root color="red" size="1">
+                    <Callout.Text>{err}</Callout.Text>
+                  </Callout.Root>
+                )}
+                <Flex gap="3" justify="end">
+                  <Button
+                    type="button"
+                    size="3"
+                    variant="soft"
+                    color="gray"
+                    onClick={() => setMode('menu')}
+                    disabled={pending}
+                  >
+                    返回
+                  </Button>
+                  <Button type="submit" size="3" disabled={pending}>
+                    {pending ? '保存中…' : '保存'}
+                  </Button>
+                </Flex>
+              </Flex>
+            </form>
+          )}
 
-        {mode === 'confirmDelete' && (
-          <div className="menu-confirm">
-            <p className="menu-confirm-text">
-              确认删除 <strong>{conv.title}</strong>？
-              <br />
-              该 session 的 PTY 会被杀掉，所有客户端（桌面 + 其他手机）都会断开。
-            </p>
-            {err && <div className="form-err">{err}</div>}
-            <div className="menu-actions">
-              <button
-                type="button"
-                className="menu-btn menu-btn-ghost"
-                onClick={() => setMode('menu')}
-                disabled={pending}
-              >
-                算了
-              </button>
-              <button
-                type="button"
-                className="menu-btn menu-btn-danger"
-                onClick={doDelete}
-                disabled={pending}
-              >
-                {pending ? '删除中…' : '确认删除'}
-              </button>
-            </div>
-          </div>
-        )}
-        </div>
+          {mode === 'confirmDelete' && (
+            <Flex direction="column" gap="3">
+              <Callout.Root color="red" size="2">
+                <Callout.Text>
+                  确认删除 <strong>{conv.title}</strong>？
+                  <br />
+                  该 session 的 PTY 会被杀掉，所有客户端（桌面 + 其他手机）都会断开。
+                </Callout.Text>
+              </Callout.Root>
+              {err && (
+                <Callout.Root color="red" size="1">
+                  <Callout.Text>{err}</Callout.Text>
+                </Callout.Root>
+              )}
+              <Flex gap="3" justify="end">
+                <Button
+                  type="button"
+                  size="3"
+                  variant="soft"
+                  color="gray"
+                  onClick={() => setMode('menu')}
+                  disabled={pending}
+                >
+                  算了
+                </Button>
+                <Button
+                  type="button"
+                  size="3"
+                  color="red"
+                  onClick={doDelete}
+                  disabled={pending}
+                >
+                  {pending ? '删除中…' : '确认删除'}
+                </Button>
+              </Flex>
+            </Flex>
+          )}
+        </Flex>
       </SheetContent>
     </Sheet>
+  )
+}
+
+function MenuRow({
+  icon,
+  children,
+  danger,
+  onClick,
+}: {
+  icon: string
+  children: React.ReactNode
+  danger?: boolean
+  onClick: () => void
+}) {
+  return (
+    <Button
+      size="3"
+      variant="soft"
+      color={danger ? 'red' : 'gray'}
+      onClick={onClick}
+      style={{ justifyContent: 'flex-start', width: '100%' }}
+    >
+      <Text style={{ width: 24, textAlign: 'center' }}>{icon}</Text>
+      <Text>{children}</Text>
+    </Button>
   )
 }

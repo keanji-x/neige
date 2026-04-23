@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Box, Button, Callout, Card, Flex, Heading, Text, TextField } from '@radix-ui/themes'
 import { login } from '../api'
 
 interface Props {
@@ -22,27 +23,41 @@ export function Login({ onAuthed }: Props) {
   }
 
   return (
-    <div className="login-screen">
-      <form className="login-card" onSubmit={submit}>
-        <div className="login-title">neige</div>
-        <div className="login-subtitle">mobile · sign in</div>
-        <input
-          className="login-input"
-          type="password"
-          inputMode="text"
-          autoComplete="current-password"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          placeholder="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-        />
-        {err && <div className="login-err">{err}</div>}
-        <button className="login-btn" type="submit" disabled={pending || !token}>
-          {pending ? '...' : 'Sign in'}
-        </button>
-      </form>
-    </div>
+    <Flex align="center" justify="center" style={{ height: '100%', padding: 24 }}>
+      <Box style={{ width: '100%', maxWidth: 360 }}>
+        <Card size="4">
+          <form onSubmit={submit}>
+            <Flex direction="column" gap="4">
+              <Box>
+                <Heading size="5" weight="medium">neige</Heading>
+                <Text size="1" color="gray" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  mobile · sign in
+                </Text>
+              </Box>
+              <TextField.Root
+                size="3"
+                type="password"
+                inputMode="text"
+                autoComplete="current-password"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+              {err && (
+                <Callout.Root color="red" size="1">
+                  <Callout.Text>{err}</Callout.Text>
+                </Callout.Root>
+              )}
+              <Button type="submit" size="3" disabled={pending || !token}>
+                {pending ? '...' : 'Sign in'}
+              </Button>
+            </Flex>
+          </form>
+        </Card>
+      </Box>
+    </Flex>
   )
 }

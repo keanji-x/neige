@@ -1,4 +1,5 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { Theme } from '@radix-ui/themes';
 import clsx from 'clsx';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
@@ -47,7 +48,19 @@ export function SheetContent({
         )}
         {...props}
       >
-        {children}
+        {/* Radix Dialog portals outside the root <Theme>, which would drop
+            token scope. Re-apply Theme here so <TextField>/<Button>/etc.
+            inside the sheet still see the tokens. hasBackground=false so we
+            don't double up the sheet's own bg. */}
+        <Theme
+          appearance="dark"
+          accentColor="green"
+          grayColor="slate"
+          radius="medium"
+          hasBackground={false}
+        >
+          {children}
+        </Theme>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );

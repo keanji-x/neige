@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Button, Sheet, SheetContent } from '@neige/shared'
+import { Sheet, SheetContent } from '@neige/shared'
+import {
+  Badge,
+  Box,
+  Button,
+  Callout,
+  Card,
+  Checkbox,
+  Flex,
+  Tabs,
+  Text,
+  TextField,
+} from '@radix-ui/themes'
 import type { ConvInfo, CreateConvRequest } from '../types'
 import { getConfig, saveConfig } from '../api'
 import { DirPicker } from './DirPicker'
@@ -38,47 +50,31 @@ export function AddSheet({
   const [mode, setMode] = useState<Mode>(available.length > 0 ? 'existing' : 'new')
 
   return (
-    <Sheet
-      open
-      onOpenChange={(o) => {
-        if (!o) onClose()
-      }}
-    >
-      <SheetContent className="p-0">
-        <div className="sheet">
-          <header className="sheet-head">
-            <div className="sheet-tabs">
-              <button
-                className={`sheet-tab${mode === 'existing' ? ' active' : ''}`}
-                onClick={() => setMode('existing')}
-              >
-                加入已有
-              </button>
-              <button
-                className={`sheet-tab${mode === 'new' ? ' active' : ''}`}
-                onClick={() => setMode('new')}
-              >
-                新建
-              </button>
-            </div>
-            <button className="link-btn" onClick={onClose}>
+    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
+      <SheetContent>
+        <Tabs.Root value={mode} onValueChange={(v) => setMode(v as Mode)}>
+          <Flex justify="between" align="center" gap="3" mb="3">
+            <Tabs.List>
+              <Tabs.Trigger value="existing">加入已有</Tabs.Trigger>
+              <Tabs.Trigger value="new">新建</Tabs.Trigger>
+            </Tabs.List>
+            <Button variant="ghost" color="gray" onClick={onClose}>
               取消
-            </button>
-          </header>
-          <div className="sheet-body">
-            {mode === 'existing' && (
-              <ExistingList
-                conversations={conversations}
-                available={available}
-                onPick={onPickExisting}
-                onPickAll={() => onPickMany(available.map((c) => c.id))}
-              />
-            )}
-            {mode === 'new' && (
-              <NewSessionForm conversations={conversations} onCreate={onCreate} />
-            )}
-          </div>
-        </div>
+            </Button>
+          </Flex>
+
+          <Tabs.Content value="existing">
+            <ExistingList
+              conversations={conversations}
+              available={available}
+              onPick={onPickExisting}
+              onPickAll={() => onPickMany(available.map((c) => c.id))}
+            />
+          </Tabs.Content>
+          <Tabs.Content value="new">
+            <NewSessionForm conversations={conversations} onCreate={onCreate} />
+          </Tabs.Content>
+        </Tabs.Root>
       </SheetContent>
     </Sheet>
   )
@@ -95,36 +91,63 @@ function ExistingList({
   onPick: (id: string) => void
   onPickAll: () => void
 }) {
+  if (conversations.length === 0) {
+    return (
+      <Box py="6" style={{ textAlign: 'center' }}>
+        <Text as="div" size="2" color="gray">server 上没有会话</Text>
+        <Text as="div" size="1" color="gray" mt="1">切到"新建"tab 建一个</Text>
+      </Box>
+    )
+  }
+  if (available.length === 0) {
+    return (
+      <Box py="6" style={{ textAlign: 'center' }}>
+        <Text size="2" color="gray">所有会话都已加入 stack</Text>
+      </Box>
+    )
+  }
   return (
-    <>
-      {conversations.length === 0 && (
-        <div className="empty">
-          <p>server 上没有会话</p>
-          <p className="empty-hint">切到"新建"tab 建一个</p>
-        </div>
-      )}
-      {conversations.length > 0 && available.length === 0 && (
-        <div className="empty">
-          <p>所有会话都已加入 stack</p>
-        </div>
-      )}
+    <Flex direction="column" gap="2">
       {available.length > 1 && (
-        <button className="sheet-row sheet-row-all" onClick={onPickAll}>
-          <span className="sheet-row-main">
-            <span className="sheet-row-title">加入全部（{available.length}）</span>
-          </span>
-        </button>
+        <Button size="3" variant="soft" onClick={onPickAll}>
+          加入全部（{available.length}）
+        </Button>
       )}
       {available.map((c) => (
-        <button key={c.id} className="sheet-row" onClick={() => onPick(c.id)}>
-          <span className={`status-dot status-${c.status}`} />
-          <span className="sheet-row-main">
-            <span className="sheet-row-title">{c.title}</span>
-            <span className="sheet-row-cwd">{shortCwd(c.effective_cwd)}</span>
-          </span>
-        </button>
+        <SessionRow key={c.id} conv={c} onPick={() => onPick(c.id)} />
       ))}
-    </>
+    </Flex>
+  )
+}
+
+function SessionRow({ conv, onPick }: { conv: ConvInfo; onPick: () => void }) {
+  const color =
+    conv.status === 'running' ? 'var(--green-9)' :
+    conv.status === 'detached' ? 'var(--yellow-9)' : 'var(--gray-8)'
+  return (
+    <Card onClick={onPick} style={{ cursor: 'pointer' }}>
+      <Flex align="center" gap="3">
+        <span
+          style={{
+            display: 'inline-block',
+            width: 8, height: 8, borderRadius: '50%',
+            background: color, flex: '0 0 auto',
+          }}
+        />
+        <Box style={{ flex: 1, minWidth: 0 }}>
+          <Text as="div" size="2" weight="medium" truncate>{conv.title}</Text>
+          <Text
+            as="div"
+            size="1"
+            color="gray"
+            truncate
+            style={{ fontFamily: 'var(--code-font-family)' }}
+          >
+            {shortCwd(conv.effective_cwd)}
+          </Text>
+        </Box>
+      </Flex>
+    </Card>
   )
 }
 
@@ -145,9 +168,6 @@ function NewSessionForm({
   const [err, setErr] = useState<string | null>(null)
   const [browsing, setBrowsing] = useState(false)
 
-  // Prefill proxy from the server-side config so most users don't need to
-  // retype it every time. We remember whatever they last saved and diff on
-  // submit to decide whether to push an update.
   useEffect(() => {
     let cancelled = false
     getConfig().then((cfg) => {
@@ -156,12 +176,9 @@ function NewSessionForm({
       setProxy(p)
       setSavedProxy(p)
     })
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
-  // Suggest cwds we've seen used before so user rarely has to type a path.
   const cwdSuggestions = Array.from(
     new Set(conversations.map((c) => c.cwd)),
   ).slice(0, 6)
@@ -176,7 +193,6 @@ function NewSessionForm({
     try {
       const proxyVal = proxy.trim()
       if (proxyVal !== savedProxy) {
-        // Persist so the next session picks the same proxy by default.
         await saveConfig({ proxy: proxyVal || undefined })
         setSavedProxy(proxyVal)
       }
@@ -196,123 +212,139 @@ function NewSessionForm({
   }
 
   return (
-    <form className="new-form" onSubmit={submit}>
-      <label className="field">
-        <span className="field-label">名称</span>
-        <input
-          className="field-input"
-          type="text"
-          value={title}
-          placeholder="e.g. fix-login-bug"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => setTitle(e.target.value)}
-        />
-      </label>
-
-      <label className="field">
-        <span className="field-label">工作目录</span>
-        <div className="field-row">
-          <input
-            className="field-input field-mono"
-            type="text"
-            value={cwd}
-            placeholder="/home/kenji/..."
-            autoCapitalize="none"
+    <form onSubmit={submit}>
+      <Flex direction="column" gap="3">
+        <Box>
+          <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+            名称
+          </Text>
+          <TextField.Root
+            size="3"
+            value={title}
+            placeholder="e.g. fix-login-bug"
+            autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            onChange={(e) => setCwd(e.target.value)}
+            onChange={(e) => setTitle(e.target.value)}
           />
-          <button
-            type="button"
-            className="field-side-btn"
-            onClick={() => setBrowsing(true)}
-            aria-label="browse directories"
-          >
-            📁
-          </button>
-        </div>
-      </label>
+        </Box>
 
-      {browsing && (
-        <DirPicker
-          initial={cwd}
-          onPick={(p) => {
-            setCwd(p)
-            setBrowsing(false)
-          }}
-          onClose={() => setBrowsing(false)}
-        />
-      )}
-
-      {cwdSuggestions.length > 0 && (
-        <div className="chip-row">
-          {cwdSuggestions.map((s) => (
-            <button
+        <Box>
+          <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+            工作目录
+          </Text>
+          <Flex gap="2">
+            <TextField.Root
+              size="3"
+              style={{ flex: 1, fontFamily: 'var(--code-font-family)' }}
+              value={cwd}
+              placeholder="/home/kenji/..."
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(e) => setCwd(e.target.value)}
+            />
+            <Button
               type="button"
-              key={s}
-              className="chip"
-              onClick={() => setCwd(s)}
+              size="3"
+              variant="soft"
+              color="gray"
+              onClick={() => setBrowsing(true)}
+              aria-label="browse directories"
             >
-              {shortCwd(s)}
-            </button>
-          ))}
-        </div>
-      )}
+              📁
+            </Button>
+          </Flex>
+        </Box>
 
-      <label className="toggle-row">
-        <span className="toggle-main">
-          <span className="toggle-title">使用 worktree</span>
-          <span className="toggle-desc">每个 session 独立的 git 分支</span>
-        </span>
-        <input
-          type="checkbox"
-          checked={useWorktree}
-          onChange={(e) => setUseWorktree(e.target.checked)}
-        />
-      </label>
+        {browsing && (
+          <DirPicker
+            initial={cwd}
+            onPick={(p) => {
+              setCwd(p)
+              setBrowsing(false)
+            }}
+            onClose={() => setBrowsing(false)}
+          />
+        )}
 
-      {useWorktree && (
-        <label className="field">
-          <span className="field-label">worktree 名（可选）</span>
-          <input
-            className="field-input field-mono"
-            type="text"
-            value={worktreeName}
-            placeholder="auto"
-            autoCapitalize="none"
+        {cwdSuggestions.length > 0 && (
+          <Flex wrap="wrap" gap="1">
+            {cwdSuggestions.map((s) => (
+              <Badge
+                key={s}
+                size="2"
+                variant="soft"
+                color="gray"
+                onClick={() => setCwd(s)}
+                style={{ cursor: 'pointer', fontFamily: 'var(--code-font-family)' }}
+              >
+                {shortCwd(s)}
+              </Badge>
+            ))}
+          </Flex>
+        )}
+
+        <Card>
+          <Text as="label" size="2">
+            <Flex gap="3" align="start">
+              <Checkbox
+                checked={useWorktree}
+                onCheckedChange={(v) => setUseWorktree(Boolean(v))}
+              />
+              <Box>
+                <Text weight="medium" as="div">使用 worktree</Text>
+                <Text size="1" color="gray" as="div">每个 session 独立的 git 分支</Text>
+              </Box>
+            </Flex>
+          </Text>
+        </Card>
+
+        {useWorktree && (
+          <Box>
+            <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+              worktree 名（可选）
+            </Text>
+            <TextField.Root
+              size="3"
+              style={{ fontFamily: 'var(--code-font-family)' }}
+              value={worktreeName}
+              placeholder="auto"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(e) => setWorktreeName(e.target.value)}
+            />
+          </Box>
+        )}
+
+        <Box>
+          <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+            HTTP 代理（可选）
+          </Text>
+          <TextField.Root
+            size="3"
+            type="url"
+            style={{ fontFamily: 'var(--code-font-family)' }}
+            value={proxy}
+            placeholder="http://127.0.0.1:10809"
+            autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            onChange={(e) => setWorktreeName(e.target.value)}
+            onChange={(e) => setProxy(e.target.value)}
           />
-        </label>
-      )}
+        </Box>
 
-      <label className="field">
-        <span className="field-label">HTTP 代理（可选）</span>
-        <input
-          className="field-input field-mono"
-          type="url"
-          value={proxy}
-          placeholder="http://127.0.0.1:10809"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => setProxy(e.target.value)}
-        />
-      </label>
+        {err && (
+          <Callout.Root color="red" size="1">
+            <Callout.Text>{err}</Callout.Text>
+          </Callout.Root>
+        )}
 
-      {err && <div className="form-err">{err}</div>}
-
-      <Button
-        type="submit"
-        variant="primary"
-        className="w-full touch:h-12"
-        disabled={!canSubmit}
-      >
-        {pending ? '创建中…' : '创建 session'}
-      </Button>
+        <Button type="submit" size="3" disabled={!canSubmit}>
+          {pending ? '创建中…' : '创建 session'}
+        </Button>
+      </Flex>
     </form>
   )
 }

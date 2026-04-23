@@ -1,4 +1,4 @@
-import { Button } from '@neige/shared'
+import { Badge, Box, Button, Card, Flex, Heading, IconButton, Text } from '@radix-ui/themes'
 import type { ConvInfo } from '../types'
 import { useCardActivity } from '../cardActivity'
 import { useLongPress } from '../useLongPress'
@@ -36,58 +36,87 @@ export function Overview({
 }: Props) {
   const byId = new Map(conversations.map((c) => [c.id, c]))
   const items = cards.map((id) => byId.get(id)).filter((c): c is ConvInfo => !!c)
-
   const orphans = cards.length - items.length
 
   return (
-    <div className="overview">
-      <header className="list-header">
-        <div>
-          <div className="list-title">neige</div>
-          <div className="list-subtitle">
+    <Flex direction="column" className="overview">
+      <Flex
+        align="center"
+        justify="between"
+        px="4"
+        py="3"
+        style={{
+          borderBottom: '1px solid var(--gray-a5)',
+          background: 'var(--color-panel-solid)',
+        }}
+      >
+        <Box>
+          <Heading size="4" weight="medium">neige</Heading>
+          <Text size="1" color="gray">
             {connected ? `${items.length} cards in stack` : 'reconnecting…'}
-          </div>
-        </div>
-        <button className="link-btn" onClick={onLogout}>
+          </Text>
+        </Box>
+        <Button variant="ghost" color="gray" onClick={onLogout}>
           logout
-        </button>
-      </header>
+        </Button>
+      </Flex>
 
-      <main className="overview-main">
+      <Box p="3" style={{ flex: 1, overflowY: 'auto' }}>
         {items.length === 0 && (
-          <div className="empty">
-            <p>栈是空的</p>
-            <p className="empty-hint">点下面 + 从已有会话里挑一个加进来</p>
-          </div>
+          <Box py="8" style={{ textAlign: 'center' }}>
+            <Text as="div" size="3" color="gray">栈是空的</Text>
+            <Text as="div" size="1" color="gray" mt="2">
+              点下面 + 从已有会话里挑一个加进来
+            </Text>
+          </Box>
         )}
 
-        {items.map((c) => (
-          <OverviewCard
-            key={c.id}
-            conv={c}
-            onActivate={() => onActivate(c.id)}
-            onRemove={() => onRemove(c.id)}
-            onLongPress={() => onLongPress(c.id)}
-          />
-        ))}
+        <Flex direction="column" gap="2">
+          {items.map((c) => (
+            <OverviewCard
+              key={c.id}
+              conv={c}
+              onActivate={() => onActivate(c.id)}
+              onRemove={() => onRemove(c.id)}
+              onLongPress={() => onLongPress(c.id)}
+            />
+          ))}
+        </Flex>
 
         {orphans > 0 && (
-          <div className="orphan-note">
-            {orphans} card(s) 已从 server 消失，已保留占位
-          </div>
+          <Box
+            mt="3"
+            p="3"
+            style={{
+              textAlign: 'center',
+              border: '1px dashed var(--gray-a5)',
+              borderRadius: 'var(--radius-3)',
+            }}
+          >
+            <Text size="1" color="gray">
+              {orphans} card(s) 已从 server 消失，已保留占位
+            </Text>
+          </Box>
         )}
-      </main>
+      </Box>
 
-      <Button
-        variant="primary"
-        size="icon"
-        className="rounded-full h-14 w-14 fixed bottom-6 right-6 shadow-lg text-2xl"
+      <IconButton
+        size="4"
+        radius="full"
         onClick={onAdd}
         aria-label="add card"
+        style={{
+          position: 'absolute',
+          right: 20,
+          bottom: 'calc(20px + env(safe-area-inset-bottom))',
+          width: 56,
+          height: 56,
+          fontSize: 28,
+        }}
       >
         +
-      </Button>
-    </div>
+      </IconButton>
+    </Flex>
   )
 }
 
@@ -106,41 +135,95 @@ function OverviewCard({
   const hasUnread = activity.completedBursts > 0
   const longPress = useLongPress(onLongPress, 450)
 
+  const statusColor =
+    conv.status === 'running' ? 'var(--green-9)' :
+    conv.status === 'detached' ? 'var(--yellow-9)' : 'var(--gray-8)'
+
   return (
-    <div className={`card${hasUnread ? ' card-unread' : ''}`}>
-      <button
-        className="card-body"
-        onClick={() => {
-          if (!longPress.didFire()) onActivate()
-        }}
-        onTouchStart={longPress.onTouchStart}
-        onTouchMove={longPress.onTouchMove}
-        onTouchEnd={longPress.onTouchEnd}
-        onTouchCancel={longPress.onTouchCancel}
-        onContextMenu={longPress.onContextMenu}
-      >
-        <div className="card-head">
-          <span className={`status-dot status-${conv.status}`} />
-          <span className="card-title">{conv.title}</span>
-          {activity.busy && <span className="card-busy" title="working…" />}
-        </div>
-        <div className="card-meta">{shortCwd(conv.effective_cwd)}</div>
-      </button>
-      {hasUnread && (
-        <span className="card-badge" aria-label={`${activity.completedBursts} unread`}>
-          {activity.completedBursts > 99 ? '99+' : activity.completedBursts}
-        </span>
-      )}
-      <button
-        className="card-close"
-        onClick={(e) => {
-          e.stopPropagation()
-          onRemove()
-        }}
-        aria-label="remove from stack"
-      >
-        ✕
-      </button>
-    </div>
+    <Card
+      style={{
+        padding: 0,
+        overflow: 'hidden',
+        borderColor: hasUnread ? 'var(--accent-a7)' : undefined,
+      }}
+    >
+      <Flex align="stretch" style={{ minHeight: 64 }}>
+        <Box
+          onClick={() => { if (!longPress.didFire()) onActivate() }}
+          onTouchStart={longPress.onTouchStart}
+          onTouchMove={longPress.onTouchMove}
+          onTouchEnd={longPress.onTouchEnd}
+          onTouchCancel={longPress.onTouchCancel}
+          onContextMenu={longPress.onContextMenu}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '14px 14px 14px 16px',
+            cursor: 'pointer',
+          }}
+        >
+          <Flex align="center" gap="2" mb="1" style={{ minWidth: 0 }}>
+            <span
+              style={{
+                display: 'inline-block',
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: statusColor,
+                flex: '0 0 auto',
+              }}
+            />
+            <Text size="3" weight="medium" truncate>{conv.title}</Text>
+            {activity.busy && (
+              <span
+                title="working…"
+                style={{
+                  display: 'inline-block',
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: 'var(--green-9)',
+                  marginLeft: 2,
+                  animation: 'pulse-green 1.4s ease-in-out infinite',
+                }}
+              />
+            )}
+          </Flex>
+          <Text
+            as="div"
+            size="1"
+            color="gray"
+            truncate
+            style={{ fontFamily: 'var(--code-font-family)' }}
+          >
+            {shortCwd(conv.effective_cwd)}
+          </Text>
+        </Box>
+        {hasUnread && (
+          <Flex align="center" pr="2">
+            <Badge color="red" variant="solid" radius="full">
+              {activity.completedBursts > 99 ? '99+' : activity.completedBursts}
+            </Badge>
+          </Flex>
+        )}
+        <Box
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+          style={{
+            width: 44,
+            borderLeft: '1px solid var(--gray-a5)',
+            display: 'grid',
+            placeItems: 'center',
+            cursor: 'pointer',
+            color: 'var(--gray-10)',
+          }}
+          aria-label="remove from stack"
+        >
+          ✕
+        </Box>
+      </Flex>
+    </Card>
   )
 }
