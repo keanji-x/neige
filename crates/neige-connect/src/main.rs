@@ -139,7 +139,9 @@ fi
 # Build if needed (new clone, code changed, or binary missing)
 if [ "$NEED_BUILD" = "1" ] || [ ! -x "$BIN" ]; then
     echo "[neige] Building frontend..."
-    cd web && npm install --no-audit --no-fund && npm run build && cd ..
+    for d in web web-mobile; do
+        (cd "$d" && npm install --no-audit --no-fund && npm run build) || exit 1
+    done
 
     echo "[neige] Building server..."
     cargo build --release -p neige-server 2>&1
