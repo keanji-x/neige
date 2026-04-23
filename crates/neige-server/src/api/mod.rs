@@ -436,12 +436,15 @@ async fn search_files(
     let query = q.query.unwrap_or_default().to_lowercase();
     let mut results: Vec<FileEntry> = Vec::new();
     let max_results = 50;
+    let mut visited: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    visited.insert(root.clone());
 
     fn walk(
         dir: &std::path::Path,
         root: &std::path::Path,
         query: &str,
         results: &mut Vec<FileEntry>,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
         max: usize,
         depth: usize,
     ) {
@@ -461,7 +464,10 @@ async fn search_files(
             if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" || name == "dist" || name == "build" {
                 continue;
             }
-            let meta = match entry.metadata() {
+            // DirEntry::metadata does not follow symlinks on Unix, so a symlinked
+            // directory would report neither is_dir nor is_file. Use fs::metadata
+            // (which follows symlinks) to get the real target type.
+            let meta = match std::fs::metadata(entry.path()) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -477,12 +483,17 @@ async fn search_files(
                     });
                 }
             } else if meta.is_dir() {
-                walk(&path, root, query, results, max, depth + 1);
+                // Canonicalize to dedupe symlink cycles (A -> B -> A) and
+                // multiple symlinks pointing at the same real dir.
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if visited.insert(canonical) {
+                    walk(&path, root, query, results, visited, max, depth + 1);
+                }
             }
         }
     }
 
-    walk(&root, &root, &query, &mut results, max_results, 0);
+    walk(&root, &root, &query, &mut results, &mut visited, max_results, 0);
     // Sort: prioritize exact filename matches, then by path length
     results.sort_by(|a, b| {
         let a_exact = a.name.to_lowercase().contains(&query);
