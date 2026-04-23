@@ -219,14 +219,6 @@ export function useTerminal(
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
     })
 
-    // See web/src/hooks/useTerminal.ts for context: in the alt buffer,
-    // xterm.js translates wheel deltas into arrow key sequences, which TUIs
-    // like claude interpret as message-history navigation. Swallow wheel in
-    // the alt buffer so trackpad/mouse users don't see content jump around.
-    term.attachCustomWheelEventHandler(() => {
-      return term.buffer.active.type !== 'alternate'
-    })
-
     window.addEventListener('resize', scheduleFit)
     const ro = new ResizeObserver(scheduleFit)
     ro.observe(container)

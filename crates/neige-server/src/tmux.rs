@@ -34,8 +34,15 @@ const TMUX_CONF: &str = "\
 
 set -g default-terminal \"xterm-256color\"
 
-# No mouse — xterm.js in the browser handles all selection/click.
-set -g mouse off
+# Mouse on so wheel events reach tmux. tmux is always in the alt buffer
+# from xterm.js's perspective, so xterm's own scrollback is 0 and the wheel
+# would otherwise be translated into up/down arrow keys that TUIs like claude
+# interpret as message-history navigation. With mouse on, xterm.js forwards
+# wheel as mouse tracking escapes; the bindings below turn wheel-in-shell
+# into a seamless scrollback scroll, and wheel-in-TUI into a no-op (claude
+# doesn't enable mouse tracking so tmux drops the event). Side effect:
+# click-drag selection now requires holding Shift (xterm.js bypass modifier).
+set -g mouse on
 
 # No status bar — we're not a human-facing tmux.
 set -g status off
@@ -43,6 +50,23 @@ set -g status off
 # No prefix key — this is a byte pipe, not an interactive multiplexer.
 set -g prefix None
 unbind-key -a
+
+# Drop the root table's default mouse bindings (click/drag/double-click all
+# trigger tmux's own selection/menu flows that we don't want — Shift+drag
+# in xterm.js does native selection for users who want it). Then re-add
+# only the wheel bindings we actually need.
+unbind-key -a -T root
+
+# Wheel-up in a plain shell (pane not in alternate screen) enters copy-mode
+# with -e, which auto-exits when scrolled past the bottom — so the user
+# never needs to press a key to leave. Wheel events in an alternate-screen
+# pane (claude TUI) pass through as mouse events; claude doesn't enable
+# mouse tracking, so tmux drops them.
+bind-key -T root WheelUpPane \\
+    if-shell -F -t = \"#{alternate_on}\" \\
+        \"send-keys -M\" \\
+        \"copy-mode -e ; send-keys -M\"
+bind-key -T root WheelDownPane send-keys -M
 
 # Big scrollback for initial-attach redraw coverage.
 set -g history-limit 50000

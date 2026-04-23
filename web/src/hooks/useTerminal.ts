@@ -227,16 +227,6 @@ export function useTerminal(containerId: string | null) {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
     });
 
-    // In the alt buffer (TUIs like claude), xterm.js's default is to translate
-    // wheel events into up/down arrow key sequences. On a Mac trackpad every
-    // flick emits a stream of deltas, so claude sees a burst of arrows and
-    // scrolls its message view — the user perceives "text jumping up/down"
-    // with no real scroll. Swallow the wheel entirely in the alt buffer; the
-    // normal buffer (shell scrollback) keeps xterm.js's default behavior.
-    term.attachCustomWheelEventHandler(() => {
-      return term.buffer.active.type !== 'alternate';
-    });
-
     // Cmd+Left/Right → line start/end (browser swallows these as history nav otherwise)
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
