@@ -785,6 +785,17 @@
 .sheet-row:active {
   background: var(--bg-hover);
 }
+.sheet-row-all {
+  background: var(--bg-hover);
+  justify-content: center;
+}
+.sheet-row-all .sheet-row-main {
+  flex: 0 0 auto;
+  align-items: center;
+}
+.sheet-row-all .sheet-row-title {
+  font-weight: 600;
+}
 .sheet-row-main {
   flex: 1;
   min-width: 0;

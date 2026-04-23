@@ -7,6 +7,7 @@ interface Props {
   conversations: ConvInfo[]
   inStack: string[]
   onPickExisting: (id: string) => void
+  onPickMany: (ids: string[]) => void
   onCreate: (req: CreateConvRequest) => Promise<void>
   onClose: () => void
 }
@@ -27,6 +28,7 @@ export function AddSheet({
   conversations,
   inStack,
   onPickExisting,
+  onPickMany,
   onCreate,
   onClose,
 }: Props) {
@@ -62,6 +64,7 @@ export function AddSheet({
               conversations={conversations}
               available={available}
               onPick={onPickExisting}
+              onPickAll={() => onPickMany(available.map((c) => c.id))}
             />
           )}
           {mode === 'new' && (
@@ -77,10 +80,12 @@ function ExistingList({
   conversations,
   available,
   onPick,
+  onPickAll,
 }: {
   conversations: ConvInfo[]
   available: ConvInfo[]
   onPick: (id: string) => void
+  onPickAll: () => void
 }) {
   return (
     <>
@@ -94,6 +99,13 @@ function ExistingList({
         <div className="empty">
           <p>所有会话都已加入 stack</p>
         </div>
+      )}
+      {available.length > 1 && (
+        <button className="sheet-row sheet-row-all" onClick={onPickAll}>
+          <span className="sheet-row-main">
+            <span className="sheet-row-title">加入全部（{available.length}）</span>
+          </span>
+        </button>
       )}
       {available.map((c) => (
         <button key={c.id} className="sheet-row" onClick={() => onPick(c.id)}>

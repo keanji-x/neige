@@ -66,6 +66,18 @@ export function useCardStack() {
     })
   }, [])
 
+  const addMany = useCallback((ids: string[]) => {
+    setCards((prev) => {
+      const existing = new Set(prev)
+      const fresh = ids.filter((id) => !existing.has(id))
+      if (fresh.length === 0) return prev
+      const next = [...prev, ...fresh]
+      setActiveIndex(next.length - 1)
+      setView('card')
+      return next
+    })
+  }, [])
+
   const remove = useCallback((id: string) => {
     setCards((prev) => {
       const idx = prev.indexOf(id)
@@ -114,6 +126,7 @@ export function useCardStack() {
     activeId: activeIndex >= 0 ? cards[activeIndex] : null,
     view,
     add,
+    addMany,
     remove,
     activate,
     showOverview,

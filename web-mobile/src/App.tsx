@@ -110,6 +110,10 @@ function App() {
             stack.add(id)
             setShowAdd(false)
           }}
+          onPickMany={(ids) => {
+            stack.addMany(ids)
+            setShowAdd(false)
+          }}
           onCreate={async (req) => {
             const conv = await createConversation(req)
             await refresh()
