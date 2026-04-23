@@ -1,5 +1,5 @@
-use crate::pty::PtySession;
-use crate::session;
+use crate::attach::SessionClient;
+use crate::attach::daemon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ pub struct ConvInfo {
     pub worktree_branch: Option<String>,
 }
 
-/// A single conversation backed by a PTY session.
+/// A single conversation backed by a session-daemon client.
 pub struct Conversation {
     pub id: Uuid,
     pub title: String,
@@ -53,13 +53,13 @@ pub struct Conversation {
     pub use_worktree: bool,
     pub worktree_branch: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub pty: Option<PtySession>,
+    pub client: Option<SessionClient>,
 }
 
 impl Conversation {
     pub fn info(&self) -> ConvInfo {
-        let status = match &self.pty {
-            Some(pty) if pty.is_alive() => Status::Running,
+        let status = match &self.client {
+            Some(c) if c.is_alive() => Status::Running,
             Some(_) => Status::Dead,
             None => Status::Detached,
         };
@@ -125,13 +125,8 @@ fn default_true() -> bool {
     true
 }
 
-/// Check if a directory is inside a git repository (public wrapper).
-pub fn is_git_repo_public(path: &str) -> bool {
-    is_git_repo(path)
-}
-
 /// Check if a directory is inside a git repository.
-fn is_git_repo(path: &str) -> bool {
+pub fn is_git_repo(path: &str) -> bool {
     std::process::Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(path)
@@ -300,6 +295,30 @@ fn load_sessions(project_cwd: &str) -> Vec<SessionMeta> {
     sessions
 }
 
+/// Ensure a daemon is up for `id` and connect a client to it, rolling back
+/// the daemon spawn if the client connect fails. Reused by `create` and
+/// `resume` so both paths converge on the same cleanup semantics.
+async fn spawn_and_connect(
+    id: &Uuid,
+    command: &str,
+    cwd: &str,
+    env: &[(String, String)],
+) -> Result<SessionClient, String> {
+    // Idempotent: if a live daemon already exists `command`/env args are
+    // ignored and `created` comes back false; in that case we don't kill
+    // the (pre-existing) daemon on connect failure.
+    let created = daemon::create_session(id, command, cwd, env).await?;
+    match SessionClient::connect(id, 200, 50).await {
+        Ok(client) => Ok(client),
+        Err(e) => {
+            if created {
+                daemon::kill_session(id).await;
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Manages all conversations.
 pub struct ConversationManager {
     convs: HashMap<Uuid, Conversation>,
@@ -337,7 +356,7 @@ impl ConversationManager {
                 use_worktree: meta.use_worktree,
                 worktree_branch: meta.worktree_branch,
                 created_at,
-                pty: None, // detached
+                client: None, // detached
             };
             self.convs.insert(conv.id, conv);
         }
@@ -387,18 +406,7 @@ impl ConversationManager {
         // Start the per-session daemon (idempotent: reuses a live one if the
         // socket is reachable) and connect. The daemon owns the PTY so it
         // outlives neige-server.
-        let created = session::create_session(&id, &command, &cwd, &env).await?;
-        let pty = match PtySession::connect(&id, 200, 50).await {
-            Ok(pty) => pty,
-            Err(e) => {
-                // Roll back the daemon we just made; don't touch a
-                // pre-existing one (created = false).
-                if created {
-                    session::kill_session(&id).await;
-                }
-                return Err(e);
-            }
-        };
+        let client = spawn_and_connect(&id, &command, &cwd, &env).await?;
 
         let conv = Conversation {
             id,
@@ -409,7 +417,7 @@ impl ConversationManager {
             use_worktree,
             worktree_branch,
             created_at: chrono::Utc::now(),
-            pty: Some(pty),
+            client: Some(client),
         };
 
         let info = conv.info();
@@ -423,7 +431,7 @@ impl ConversationManager {
         let conv = self.convs.get_mut(id)
             .ok_or_else(|| "session not found".to_string())?;
 
-        if conv.pty.as_ref().is_some_and(|p| p.is_alive()) {
+        if conv.client.as_ref().is_some_and(|c| c.is_alive()) {
             return Ok(conv.info());
         }
 
@@ -442,17 +450,8 @@ impl ConversationManager {
         // still alive, create_session short-circuits and `command`/env args
         // are ignored — the user reattaches to the same live claude. If the
         // daemon is gone, a fresh one is spawned with the resume command.
-        let created = session::create_session(&conv.id, &command, &cwd, &env).await?;
-        let pty = match PtySession::connect(&conv.id, 200, 50).await {
-            Ok(pty) => pty,
-            Err(e) => {
-                if created {
-                    session::kill_session(&conv.id).await;
-                }
-                return Err(e);
-            }
-        };
-        conv.pty = Some(pty);
+        let client = spawn_and_connect(&conv.id, &command, &cwd, &env).await?;
+        conv.client = Some(client);
 
         save_session(&conv.meta(), &self.project_cwd);
         Ok(conv.info())
@@ -483,7 +482,7 @@ impl ConversationManager {
         // Kill the session daemon so the inner program stops; dropping only
         // our socket would leave the daemon (and the claude it's running)
         // orphaned.
-        session::kill_session(id).await;
+        daemon::kill_session(id).await;
         remove_session_file(id, &self.project_cwd);
         self.convs.remove(id);
     }

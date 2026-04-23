@@ -1,8 +1,7 @@
 mod api;
+mod attach;
 mod auth;
 mod conversation;
-mod pty;
-mod session;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
