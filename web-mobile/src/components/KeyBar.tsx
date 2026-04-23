@@ -3,9 +3,11 @@ interface Props {
   onAction: (action: 'scrollBottom') => void
 }
 
+type KeyVariant = 'macro' | 'wide' | 'accent'
+
 type KeyDef =
-  | { kind: 'seq'; label: string; seq: string; variant?: 'macro' | 'wide' }
-  | { kind: 'action'; label: string; action: 'scrollBottom'; variant?: 'macro' | 'wide' }
+  | { kind: 'seq'; label: string; seq: string; variant?: KeyVariant }
+  | { kind: 'action'; label: string; action: 'scrollBottom'; variant?: KeyVariant }
 
 // Claude-friendly shortcuts, not a generic terminal key bar.
 // Numbers 1/2/3 cover Claude's menu choices; Esc interrupts; ↑↓ history.
@@ -22,7 +24,7 @@ const KEYS: KeyDef[] = [
   { kind: 'seq', label: '↓', seq: '\x1b[B' },
   { kind: 'seq', label: '←', seq: '\x1b[D' },
   { kind: 'seq', label: '→', seq: '\x1b[C' },
-  { kind: 'action', label: '⤓', action: 'scrollBottom' },
+  { kind: 'action', label: '⤓', action: 'scrollBottom', variant: 'accent' },
   { kind: 'seq', label: '⌫', seq: '\x7f' },
   { kind: 'seq', label: '/', seq: '/' },
   { kind: 'seq', label: '⏎', seq: '\r', variant: 'wide' },
@@ -38,7 +40,13 @@ export function KeyBar({ onKey, onAction }: Props) {
     <div className="key-bar" role="toolbar" aria-label="shortcuts">
       {KEYS.map((k) => {
         const variantClass =
-          k.variant === 'wide' ? ' key-wide' : k.variant === 'macro' ? ' key-macro' : ''
+          k.variant === 'wide'
+            ? ' key-wide'
+            : k.variant === 'macro'
+              ? ' key-macro'
+              : k.variant === 'accent'
+                ? ' key-accent'
+                : ''
         return (
           <button
             key={k.label}

@@ -978,7 +978,17 @@
   font-size: 16px;
 }
 .key-wide:active {
-  background: #6b2eff;
+  filter: brightness(0.9);
+}
+
+.key-accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.key-accent:active {
+  filter: brightness(0.9);
 }
 
 .key-macro {
