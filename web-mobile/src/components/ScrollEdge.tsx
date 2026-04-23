@@ -86,5 +86,12 @@ export function ScrollEdge({ termRef }: Props) {
     }
   }, [termRef])
 
-  return <div ref={ref} className={`scroll-edge${active ? ' scroll-edge-active' : ''}`} />
+  return (
+    // `scroll-edge` is styled from App.css and is also referenced by selector
+    // in TerminalPane's touch handler. Keep the class — the ::before pseudo
+    // + active-state animation are non-trivial to reproduce in Tailwind and
+    // this element is tiny. The `scroll-edge-active` toggle is the only
+    // dynamic bit; App.css handles the rest.
+    <div ref={ref} className={`scroll-edge${active ? ' scroll-edge-active' : ''}`} />
+  )
 }

@@ -121,30 +121,40 @@ export function FileViewer({ filePath }: FileViewerProps) {
   if (isImage) {
     const cacheKey = normalizeEtag(etag);
     return (
-      <div className="file-viewer">
-        <div className="file-viewer-header">
-          <span className="file-viewer-path">{filePath}</span>
-          <span className="file-viewer-lang">{ext}</span>
+      <div className="w-full h-full flex flex-col bg-bg-primary overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-bg-secondary flex-shrink-0">
+          <span className="flex-1 min-w-0 font-mono text-xs text-text-muted whitespace-nowrap overflow-hidden text-ellipsis">
+            {filePath}
+          </span>
+          <span className="text-xs text-blue bg-blue-dim px-2 py-0.5 rounded-[3px] uppercase tracking-[0.05em] flex-shrink-0">
+            {ext}
+          </span>
           <button
-            className="file-viewer-copy"
+            className="flex-shrink-0 text-xs font-sans text-text-muted bg-transparent border border-border rounded-[3px] px-2 py-0.5 cursor-pointer leading-[1.4] transition-colors hover:text-text-primary hover:border-text-muted hover:bg-bg-primary disabled:opacity-40 disabled:cursor-default"
             onClick={handleRefresh}
             title="Reload image from disk"
           >
             Refresh
           </button>
         </div>
-        <div className="file-viewer-content file-viewer-content-image">
+        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-bg-secondary">
           {cacheKey ? (
             <img
-              className="file-viewer-image"
+              className="max-w-full max-h-full object-contain"
               src={`${fileUrl}&v=${encodeURIComponent(cacheKey)}`}
               alt={filePath}
               onError={() => setError('failed to load image')}
             />
           ) : (
-            <div className="file-viewer-loading">Loading...</div>
+            <div className="flex items-center justify-center h-full text-text-muted text-base">
+              Loading...
+            </div>
           )}
-          {error && <div className="file-viewer-error">{error}</div>}
+          {error && (
+            <div className="flex items-center justify-center h-full text-red text-base">
+              {error}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -152,16 +162,20 @@ export function FileViewer({ filePath }: FileViewerProps) {
 
   if (loading && !content) {
     return (
-      <div className="file-viewer">
-        <div className="file-viewer-loading">Loading...</div>
+      <div className="w-full h-full flex flex-col bg-bg-primary overflow-hidden">
+        <div className="flex items-center justify-center h-full text-text-muted text-base">
+          Loading...
+        </div>
       </div>
     );
   }
 
   if (error && !content) {
     return (
-      <div className="file-viewer">
-        <div className="file-viewer-error">Failed to load file: {error}</div>
+      <div className="w-full h-full flex flex-col bg-bg-primary overflow-hidden">
+        <div className="flex items-center justify-center h-full text-red text-base">
+          Failed to load file: {error}
+        </div>
       </div>
     );
   }
@@ -169,19 +183,23 @@ export function FileViewer({ filePath }: FileViewerProps) {
   const isMarkdown = language === 'markdown';
 
   return (
-    <div className="file-viewer">
-      <div className="file-viewer-header">
-        <span className="file-viewer-path">{filePath}</span>
-        <span className="file-viewer-lang">{language}</span>
+    <div className="w-full h-full flex flex-col bg-bg-primary overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-bg-secondary flex-shrink-0">
+        <span className="flex-1 min-w-0 font-mono text-xs text-text-muted whitespace-nowrap overflow-hidden text-ellipsis">
+          {filePath}
+        </span>
+        <span className="text-xs text-blue bg-blue-dim px-2 py-0.5 rounded-[3px] uppercase tracking-[0.05em] flex-shrink-0">
+          {language}
+        </span>
         <button
-          className="file-viewer-copy"
+          className="flex-shrink-0 text-xs font-sans text-text-muted bg-transparent border border-border rounded-[3px] px-2 py-0.5 cursor-pointer leading-[1.4] transition-colors hover:text-text-primary hover:border-text-muted hover:bg-bg-primary disabled:opacity-40 disabled:cursor-default"
           onClick={handleRefresh}
           title="Reload file from disk"
         >
           Refresh
         </button>
         <button
-          className="file-viewer-copy"
+          className="flex-shrink-0 text-xs font-sans text-text-muted bg-transparent border border-border rounded-[3px] px-2 py-0.5 cursor-pointer leading-[1.4] transition-colors hover:text-text-primary hover:border-text-muted hover:bg-bg-primary disabled:opacity-40 disabled:cursor-default"
           onClick={handleCopy}
           title="Copy full contents"
           disabled={!content}
@@ -189,15 +207,18 @@ export function FileViewer({ filePath }: FileViewerProps) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <div className="file-viewer-content">
+      <div className="flex-1 overflow-auto p-4">
         {isMarkdown ? (
           <div
             className="file-viewer-markdown"
             dangerouslySetInnerHTML={{ __html: marked.parse(content) as string }}
           />
         ) : (
-          <pre className="file-viewer-code">
-            <code>{content}</code>
+          <pre
+            className="m-0 font-mono text-sm leading-[1.6] text-text-primary whitespace-pre-wrap break-words"
+            style={{ tabSize: 4 }}
+          >
+            <code className="font-[inherit]">{content}</code>
           </pre>
         )}
       </div>

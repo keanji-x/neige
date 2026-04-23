@@ -1,3 +1,5 @@
+import clsx from 'clsx'
+
 interface Props {
   onKey: (seq: string) => void
 }
@@ -34,14 +36,27 @@ export function KeyBar({ onKey }: Props) {
     if ('vibrate' in navigator) navigator.vibrate?.(8)
   }
   return (
-    <div className="key-bar" role="toolbar" aria-label="shortcuts">
+    <div
+      className="flex flex-wrap gap-1.5 py-1.5 px-2 border-t border-border bg-bg-tertiary"
+      role="toolbar"
+      aria-label="shortcuts"
+    >
       {KEYS.map((k) => {
-        const variantClass =
-          k.variant === 'wide' ? ' key-wide' : k.variant === 'macro' ? ' key-macro' : ''
+        const isWide = k.variant === 'wide'
+        const isMacro = k.variant === 'macro'
         return (
           <button
             key={k.label}
-            className={`key-btn${variantClass}`}
+            className={clsx(
+              // Base key-btn
+              'shrink-0 h-9 rounded-[8px] border font-mono font-medium',
+              // Default dims
+              !isWide && !isMacro && 'min-w-10 px-2.5 bg-bg-elevated border-border text-text-secondary text-base active:bg-green-dim active:text-text-primary active:border-action',
+              // Wide enter
+              isWide && 'min-w-16 px-2.5 bg-action text-white border-action text-lg active:bg-action-hover',
+              // Macro (/rewind)
+              isMacro && 'min-w-10 px-3 bg-bg-secondary text-action border-green-dim font-sans text-sm font-semibold tracking-normal active:bg-green-dim active:text-white active:border-action',
+            )}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => tap(k.seq)}
           >

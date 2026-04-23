@@ -37,6 +37,9 @@ export function JumpToBottom({ termRef }: Props) {
   if (!visible) return null
 
   return (
+    // `jump-bottom` class is kept because TerminalPane's touch handler uses
+    // `target.closest('.jump-bottom')` to avoid stealing this button's tap.
+    // The visual styling lives in App.css.
     <button
       className="jump-bottom"
       onClick={() => termRef.current?.scrollToBottom()}

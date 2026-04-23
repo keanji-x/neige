@@ -50,10 +50,10 @@ export function WebView({ url }: WebViewProps) {
   }, [currentUrl, proxyUrl]);
 
   return (
-    <div className="webview">
-      <div className="webview-toolbar">
+    <div className="flex flex-col h-full bg-[#1a1a2e]">
+      <div className="flex items-center gap-1.5 px-2 py-1.5 bg-bg-secondary border-b border-border flex-shrink-0">
         <button
-          className="webview-btn"
+          className="bg-bg-tertiary border border-border text-text-secondary rounded w-7 h-7 cursor-pointer flex items-center justify-center text-sm flex-shrink-0 hover:bg-bg-hover hover:text-text-primary"
           onClick={handleRefresh}
           title="Refresh"
         >
@@ -61,7 +61,7 @@ export function WebView({ url }: WebViewProps) {
         </button>
         <input
           ref={inputRef}
-          className="webview-url-input"
+          className="flex-1 bg-bg-primary border border-border text-text-primary px-2.5 py-1 rounded-[14px] text-sm font-[inherit] outline-none h-7 focus:border-blue"
           value={inputUrl}
           onChange={(e) => setInputUrl(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -70,18 +70,22 @@ export function WebView({ url }: WebViewProps) {
           placeholder="Enter URL..."
         />
         <button
-          className="webview-btn"
+          className="bg-bg-tertiary border border-border text-text-secondary rounded w-7 h-7 cursor-pointer flex items-center justify-center text-sm flex-shrink-0 hover:bg-bg-hover hover:text-text-primary"
           onClick={() => navigate(inputUrl)}
           title="Go"
         >
           &#10132;
         </button>
       </div>
-      <div className="webview-content">
-        {loading && <div className="webview-loading">Loading...</div>}
+      <div className="flex-1 relative min-h-0">
+        {loading && (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-text-secondary text-base z-[1]">
+            Loading...
+          </div>
+        )}
         <iframe
           ref={iframeRef}
-          className="webview-iframe"
+          className="w-full h-full border-none bg-white"
           src={proxyUrl(currentUrl)}
           onLoad={() => setLoading(false)}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"

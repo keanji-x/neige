@@ -22,12 +22,17 @@ export function Login({ onAuthed }: Props) {
   }
 
   return (
-    <div className="login-screen">
-      <form className="login-card" onSubmit={submit}>
-        <div className="login-title">neige</div>
-        <div className="login-subtitle">mobile · sign in</div>
+    <div className="grid place-items-center h-full p-6">
+      <form
+        className="w-full max-w-[360px] flex flex-col gap-[14px] py-7 px-6 bg-bg-secondary border border-border rounded-[16px]"
+        onSubmit={submit}
+      >
+        <div className="text-[22px] font-semibold tracking-[-0.01em]">neige</div>
+        <div className="text-[12px] text-text-muted mb-2 uppercase tracking-[0.08em]">
+          mobile · sign in
+        </div>
         <input
-          className="login-input"
+          className="h-[46px] px-[14px] bg-bg-tertiary border border-border rounded-[8px] text-lg text-text-primary focus:border-action focus:outline-none"
           type="password"
           inputMode="text"
           autoComplete="current-password"
@@ -38,8 +43,12 @@ export function Login({ onAuthed }: Props) {
           value={token}
           onChange={(e) => setToken(e.target.value)}
         />
-        {err && <div className="login-err">{err}</div>}
-        <button className="login-btn" type="submit" disabled={pending || !token}>
+        {err && <div className="text-red text-sm">{err}</div>}
+        <button
+          className="h-[46px] rounded-[8px] bg-action text-white font-semibold text-[15px] disabled:opacity-50"
+          type="submit"
+          disabled={pending || !token}
+        >
           {pending ? '...' : 'Sign in'}
         </button>
       </form>

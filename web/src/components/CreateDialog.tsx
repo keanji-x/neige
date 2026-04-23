@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Button, Dialog, DialogContent } from '@neige/shared';
 import type { CreateConvRequest, DirEntry } from '../types';
 import { browseDir, isGitRepo } from '../api';
@@ -226,17 +227,19 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           }
         }}
       >
-      <div className="modal" onKeyDown={handleKeyDown}>
-        <h2>New Conversation</h2>
+      <div className="w-full" onKeyDown={handleKeyDown}>
+        <h2 className="m-0 mb-5 text-lg font-semibold tracking-[-0.01em]">New Conversation</h2>
 
         {(config.recentCommands?.length ?? 0) > 0 && (
-          <div className="recent-commands">
-            <label className="field-label">Recent</label>
-            <div className="recent-commands-list">
+          <div className="mb-4">
+            <label className="block text-xs text-text-muted mb-1.5 font-medium tracking-[0.03em]">
+              Recent
+            </label>
+            <div className="flex flex-wrap gap-1.5">
               {config.recentCommands!.map((cmd: RecentCommand, i: number) => (
                 <button
                   key={i}
-                  className="recent-command-item"
+                  className="flex items-center gap-1.5 px-2.5 py-[5px] bg-bg-primary border border-border rounded-md text-text-secondary text-xs font-sans cursor-pointer transition-colors max-w-full hover:bg-bg-hover hover:border-blue hover:text-text-primary"
                   onClick={() => {
                     setTitle(cmd.title || '');
                     setProgram(PROGRAMS.includes(cmd.program) ? cmd.program : '__custom__');
@@ -246,26 +249,29 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                     setWorktreeError('');
                   }}
                 >
-                  <span className="recent-command-program">{cmd.program}</span>
-                  <span className="recent-command-path">{cmd.cwd ? cmd.cwd.replace(/^\/home\/[^/]+/, '~') : 'default'}</span>
+                  <span className="font-medium text-blue flex-shrink-0">{cmd.program}</span>
+                  <span className="font-mono text-xs text-text-faint whitespace-nowrap overflow-hidden text-ellipsis">
+                    {cmd.cwd ? cmd.cwd.replace(/^\/home\/[^/]+/, '~') : 'default'}
+                  </span>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        <label className="field-label">Title</label>
+        <label className="block text-xs text-text-muted mb-1.5 font-medium tracking-[0.03em]">Title</label>
         <input
           ref={titleRef}
+          className="w-full px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-sans mb-4 outline-none transition-colors focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)] placeholder:text-text-faint"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder={cwd ? cwd.split('/').filter(Boolean).pop() || '' : 'Auto from directory name'}
         />
 
-        <label className="field-label">Program</label>
-        <div className="program-row">
+        <label className="block text-xs text-text-muted mb-1.5 font-medium tracking-[0.03em]">Program</label>
+        <div className="flex gap-2 mb-4">
           <select
-            className="program-select"
+            className="program-select flex-1 px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-sans outline-none cursor-pointer transition-colors appearance-none pr-8 focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)]"
             value={PROGRAMS.includes(program) ? program : '__custom__'}
             onChange={(e) => {
               const val = e.target.value;
@@ -280,7 +286,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           </select>
           {program === '__custom__' && (
             <input
-              className="program-custom-input"
+              className="flex-1 px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-mono outline-none transition-colors focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)]"
               value={customProgram}
               onChange={(e) => setCustomProgram(e.target.value)}
               placeholder="Enter program name"
@@ -289,8 +295,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           )}
         </div>
 
-        <label className="field-label">Proxy</label>
+        <label className="block text-xs text-text-muted mb-1.5 font-medium tracking-[0.03em]">Proxy</label>
         <input
+          className="w-full px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-sans mb-4 outline-none transition-colors focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)] placeholder:text-text-faint"
           value={proxy}
           onChange={(e) => setProxy(e.target.value)}
           placeholder="e.g. http://127.0.0.1:7890"
@@ -298,20 +305,22 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
 
         {isClaudeProgram && (
           <>
-            <label className="field-label checkbox-label">
+            <label className="flex items-center gap-2 mb-4 cursor-pointer text-xs text-text-muted font-medium tracking-[0.03em]">
               <input
                 type="checkbox"
+                className="w-auto m-0 p-0 cursor-pointer accent-blue"
                 checked={useWorktree}
                 onChange={(e) => {
                   setUseWorktree(e.target.checked);
                   setWorktreeError('');
                 }}
               />
-              <span>Use git worktree</span>
-              <span className="field-hint">Each session gets its own branch</span>
+              <span className="text-sm text-text-primary">Use git worktree</span>
+              <span className="text-xs text-text-faint font-normal">Each session gets its own branch</span>
             </label>
             {useWorktree && (
               <input
+                className="w-full px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-sans mb-4 outline-none transition-colors focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)] placeholder:text-text-faint"
                 value={worktreeName}
                 onChange={(e) => {
                   setWorktreeName(e.target.value);
@@ -321,16 +330,21 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
               />
             )}
             {worktreeError && (
-              <div className="field-error">{worktreeError}</div>
+              <div className="text-xs text-red -mt-2 mb-3 px-2.5 py-1.5 bg-red-dim border-l-2 border-red rounded-[2px]">
+                {worktreeError}
+              </div>
             )}
           </>
         )}
 
-        <label className="field-label">Working Directory</label>
-        <div className="path-input-row">
-          <div className="path-input-wrapper">
+        <label className="block text-xs text-text-muted mb-1.5 font-medium tracking-[0.03em]">
+          Working Directory
+        </label>
+        <div className="flex gap-2 mb-4">
+          <div className="flex-1 relative">
             <input
               ref={cwdInputRef}
+              className="w-full px-3 py-[9px] bg-bg-primary border border-border rounded-md text-text-primary text-base font-sans outline-none transition-colors focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)] placeholder:text-text-faint"
               value={cwd}
               onChange={(e) => handleCwdChange(e.target.value)}
               onKeyDown={handleCwdKeyDown}
@@ -338,17 +352,20 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
               placeholder="Type to autocomplete, Tab to browse"
             />
             {showSuggestions && suggestions.length > 0 && (
-              <div className="path-suggestions">
+              <div className="absolute top-full left-0 right-0 bg-bg-primary border border-border-light border-t-0 rounded-b-md max-h-[200px] overflow-y-auto z-10 shadow-md">
                 {suggestions.map((s, i) => (
                   <button
                     key={s.name}
-                    className={`path-suggestion ${i === selectedSuggestion ? 'selected' : ''}`}
+                    className={clsx(
+                      'flex items-center gap-1.5 w-full px-3 py-1.5 bg-transparent border-none border-b border-border last:border-b-0 text-text-secondary text-sm font-mono cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
+                      i === selectedSuggestion && 'bg-blue-dim text-text-primary',
+                    )}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       applySuggestion(s.name);
                     }}
                   >
-                    <span className="dir-entry-icon">&#128193;</span>
+                    <span className="mr-1.5 text-sm">&#128193;</span>
                     {s.name}
                   </button>
                 ))}
@@ -356,7 +373,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
             )}
           </div>
           <button
-            className="btn-browse"
+            className="bg-bg-tertiary border border-border text-text-secondary px-3 py-2 rounded-md cursor-pointer text-sm font-sans whitespace-nowrap transition-colors hover:bg-bg-active hover:border-border-light"
             onClick={() => browse(cwd || '~')}
             type="button"
           >
@@ -367,9 +384,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
         {showBrowser && (
           <>
             {cwdSegments.length > 0 && (
-              <div className="dir-breadcrumb">
+              <div className="dir-breadcrumb flex flex-wrap items-center gap-0.5 mb-2 text-xs font-mono">
                 <button
-                  className="breadcrumb-seg breadcrumb-root"
+                  className="bg-bg-tertiary border-none text-text-muted px-1.5 py-0.5 rounded cursor-pointer font-mono text-xs transition-colors hover:bg-bg-hover hover:text-blue"
                   onClick={() => browse('/')}
                 >
                   /
@@ -377,7 +394,10 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                 {cwdSegments.map((seg, i) => (
                   <button
                     key={i}
-                    className={`breadcrumb-seg ${i === cwdSegments.length - 1 ? 'breadcrumb-current' : ''}`}
+                    className={clsx(
+                      'breadcrumb-seg bg-bg-tertiary border-none text-text-muted px-1.5 py-0.5 rounded cursor-pointer font-mono text-xs transition-colors hover:bg-bg-hover hover:text-blue',
+                      i === cwdSegments.length - 1 && 'text-text-primary font-medium',
+                    )}
                     onClick={() => browse('/' + cwdSegments.slice(0, i + 1).join('/'))}
                   >
                     {seg}
@@ -385,15 +405,15 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                 ))}
               </div>
             )}
-            <div className="dir-browser">
+            <div className="bg-bg-primary border border-border rounded-md max-h-[180px] overflow-y-auto mb-4">
               <button
-                className="dir-entry dir-parent"
+                className="block w-full px-3 py-[7px] bg-transparent border-none border-b border-border last:border-b-0 text-text-muted text-sm font-mono cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary"
                 onClick={() => {
                   const parent = cwd.replace(/\/[^/]+\/?$/, '') || '/';
                   browse(parent);
                 }}
               >
-                <span className="dir-entry-icon">&#8617;</span>
+                <span className="mr-1.5 text-sm">&#8617;</span>
                 ..
               </button>
               {entries
@@ -401,7 +421,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                 .map((entry) => (
                   <button
                     key={entry.name}
-                    className="dir-entry"
+                    className="block w-full px-3 py-[7px] bg-transparent border-none border-b border-border last:border-b-0 text-text-secondary text-sm font-mono cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary"
                     onClick={() => {
                       const next = cwd.endsWith('/')
                         ? `${cwd}${entry.name}`
@@ -409,7 +429,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                       browse(next);
                     }}
                   >
-                    <span className="dir-entry-icon">&#128193;</span>
+                    <span className="mr-1.5 text-sm">&#128193;</span>
                     {entry.name}
                   </button>
                 ))}
@@ -417,9 +437,12 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           </>
         )}
 
-        <div className="modal-actions">
-          <div className="modal-hint">
-            <kbd>⌘</kbd> + <kbd>Enter</kbd> to create
+        <div className="flex gap-2 items-center justify-end mt-3">
+          <div className="mr-auto text-xs text-text-faint flex items-center gap-[3px]">
+            <kbd className="inline-block px-1.5 py-px bg-bg-tertiary border border-border rounded-[3px] font-mono text-[10px] text-text-muted leading-[1.4]">⌘</kbd>
+            +
+            <kbd className="inline-block px-1.5 py-px bg-bg-tertiary border border-border rounded-[3px] font-mono text-[10px] text-text-muted leading-[1.4]">Enter</kbd>
+            to create
           </div>
           <Button variant="ghost" onClick={onClose}>
             Cancel

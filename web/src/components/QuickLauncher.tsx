@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Dialog, DialogContent } from '@neige/shared';
 import type { RecentCommand } from '../hooks/useConfig';
 import type { ConvInfo } from '../types';
@@ -95,7 +96,7 @@ export function QuickLauncher({
   };
 
   useEffect(() => {
-    const el = document.querySelector('.quick-launcher-item.selected');
+    const el = document.querySelector('[data-launcher-selected="true"]');
     el?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
@@ -117,57 +118,85 @@ export function QuickLauncher({
           inputRef.current?.focus();
         }}
       >
-      <div className="file-picker" onKeyDown={handleKeyDown}>
-        <div className="file-picker-input-row">
-          <span className="file-picker-icon">{'\u{26A1}'}</span>
+      <div
+        className="flex flex-col w-full max-h-[420px] overflow-hidden"
+        onKeyDown={handleKeyDown}
+      >
+        <div className="flex items-center px-4 py-3 border-b border-border gap-2">
+          <span className="text-base flex-shrink-0 opacity-50">{'\u{26A1}'}</span>
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => { setQuery(e.target.value); setSelected(0); }}
             placeholder="Switch session or launch recent command..."
-            className="file-picker-input"
+            className="flex-1 bg-transparent border-none text-text-primary text-[15px] font-sans outline-none placeholder:text-text-faint"
           />
         </div>
-        <div className="file-picker-results">
+        <div className="flex-1 overflow-y-auto py-1">
           {items.length === 0 && (
-            <div className="file-picker-empty">
+            <div className="px-6 py-6 text-center text-text-faint text-sm">
               {query ? 'No matches' : 'No sessions or recent commands'}
             </div>
           )}
           {hasSessions && (
-            <div className="file-picker-section-label">Active sessions</div>
+            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
+              Active sessions
+            </div>
           )}
           {items.filter((i) => i.type === 'session').map((item) => {
             const idx = globalIdx++;
             const s = item.session!;
+            const isSelected = idx === selected;
             return (
               <button
                 key={`s:${s.id}`}
-                className={`file-picker-item ${idx === selected ? 'selected' : ''}`}
+                data-launcher-selected={isSelected ? 'true' : undefined}
+                className={clsx(
+                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
+                  isSelected && 'bg-blue-dim text-text-primary',
+                )}
                 onClick={() => handleSelect(item)}
                 onMouseEnter={() => setSelected(idx)}
               >
-                <span className={`quick-launcher-dot ${s.status}`} />
-                <span className="file-picker-item-name">{item.label}</span>
-                <span className="file-picker-item-path">{item.detail}</span>
+                <span
+                  className={clsx(
+                    'w-2 h-2 rounded-full flex-shrink-0',
+                    s.status === 'running' && 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.5)]',
+                    s.status === 'detached' && 'bg-yellow shadow-[0_0_6px_rgba(210,153,34,0.5)]',
+                    s.status === 'dead' && 'bg-text-faint',
+                  )}
+                />
+                <span className="font-medium whitespace-nowrap">{item.label}</span>
+                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
+                  {item.detail}
+                </span>
               </button>
             );
           })}
           {hasRecent && (
-            <div className="file-picker-section-label">Launch new</div>
+            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
+              Launch new
+            </div>
           )}
           {items.filter((i) => i.type === 'recent').map((item, i) => {
             const idx = globalIdx++;
+            const isSelected = idx === selected;
             return (
               <button
                 key={`r:${i}`}
-                className={`file-picker-item ${idx === selected ? 'selected' : ''}`}
+                data-launcher-selected={isSelected ? 'true' : undefined}
+                className={clsx(
+                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
+                  isSelected && 'bg-blue-dim text-text-primary',
+                )}
                 onClick={() => handleSelect(item)}
                 onMouseEnter={() => setSelected(idx)}
               >
-                <span className="file-picker-item-icon">{'\u{1F680}'}</span>
-                <span className="file-picker-item-name">{item.label}</span>
-                <span className="file-picker-item-path">{item.detail}</span>
+                <span className="text-sm flex-shrink-0">{'\u{1F680}'}</span>
+                <span className="font-medium whitespace-nowrap">{item.label}</span>
+                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
+                  {item.detail}
+                </span>
               </button>
             );
           })}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Button } from '@neige/shared';
 import type { ConvInfo } from '../types';
 import { PortForwardPanel } from './PortForwardPanel';
@@ -72,7 +73,7 @@ function InlineTitle({
     return (
       <input
         ref={inputRef}
-        className="conv-title-input"
+        className="text-sm font-medium font-sans text-text-primary bg-bg-primary border border-blue rounded-[3px] px-[3px] py-0 outline-none w-full shadow-[0_0_0_2px_rgba(56,139,253,0.2)]"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
@@ -88,7 +89,7 @@ function InlineTitle({
 
   return (
     <span
-      className="conv-title"
+      className="text-sm font-medium whitespace-nowrap overflow-hidden text-ellipsis text-text-primary cursor-default rounded-[3px] px-0.5 hover:bg-bg-hover"
       onDoubleClick={(e) => {
         e.stopPropagation();
         setEditing(true);
@@ -174,61 +175,99 @@ export function Sidebar({
     return { running, detached, dead };
   }, [conversations]);
 
-  const renderItem = (c: ConvInfo) => (
-    <div
-      key={c.id}
-      className={`conv-item ${activeTab === c.id ? 'active' : ''} ${openTabs.includes(c.id) ? 'open' : ''} ${busyIds.has(c.id) ? 'busy' : ''}`}
-      onClick={() => onSelect(c.id)}
-    >
-      <div className="conv-status-dot-wrapper">
-        <span className={`conv-status-dot ${c.status}`} />
-      </div>
-      <div className="conv-info">
-        <InlineTitle
-          value={c.title}
-          onSave={(newTitle) => onRename(c.id, newTitle)}
-        />
-        <span className="conv-meta">
-          <span className="conv-path">{c.cwd}</span>
-          {c.worktree_branch && (
-            <span className="conv-branch" title={c.worktree_branch}>
-              &#9741; {c.worktree_branch.replace('neige/', '')}
+  const renderItem = (c: ConvInfo) => {
+    const isActive = activeTab === c.id;
+    const isOpen = openTabs.includes(c.id);
+    const isBusy = busyIds.has(c.id);
+    return (
+      <div
+        key={c.id}
+        className={clsx(
+          'group px-2.5 py-2 rounded-md cursor-pointer mb-px flex items-center gap-2.5 border border-transparent transition-colors hover:bg-bg-hover',
+          isActive && 'bg-blue-dim border-[rgba(56,139,253,0.4)] shadow-[inset_0_0_0_1px_rgba(56,139,253,0.1)]',
+          isOpen && !isActive && 'border-l-2 border-l-blue',
+          isBusy && 'opacity-45 transition-opacity duration-300',
+        )}
+        onClick={() => onSelect(c.id)}
+      >
+        <div className="flex-shrink-0 w-2.5 flex items-center justify-center">
+          <span
+            className={clsx(
+              'w-2 h-2 rounded-full block',
+              c.status === 'running' && 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.5)] animate-pulse',
+              c.status === 'detached' && 'bg-yellow shadow-[0_0_6px_rgba(210,153,34,0.5)]',
+              c.status === 'dead' && 'bg-text-faint',
+            )}
+          />
+        </div>
+        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+          <InlineTitle
+            value={c.title}
+            onSave={(newTitle) => onRename(c.id, newTitle)}
+          />
+          <span className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-mono text-text-muted whitespace-nowrap overflow-hidden text-ellipsis min-w-0">
+              {c.cwd}
             </span>
-          )}
-          <span className="conv-time">{timeAgo(c.created_at)}</span>
-        </span>
+            {c.worktree_branch && (
+              <span
+                className="text-[10px] font-mono text-blue whitespace-nowrap overflow-hidden text-ellipsis max-w-[80px]"
+                title={c.worktree_branch}
+              >
+                &#9741; {c.worktree_branch.replace('neige/', '')}
+              </span>
+            )}
+            <span className="text-[10px] text-text-faint whitespace-nowrap flex-shrink-0">
+              {timeAgo(c.created_at)}
+            </span>
+          </span>
+        </div>
+        <div className="flex gap-1.5 items-center flex-shrink-0 ml-1">
+          <button
+            className="bg-transparent border-none text-red cursor-pointer text-base opacity-0 group-hover:opacity-40 hover:!opacity-100 hover:bg-red-dim transition-opacity px-1 py-0.5 leading-none rounded"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(c.id);
+            }}
+            title="Delete"
+            aria-label="Delete conversation"
+          >
+            ×
+          </button>
+        </div>
       </div>
-      <div className="conv-actions">
-        <button
-          className="btn-delete"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(c.id);
-          }}
-          title="Delete"
-          aria-label="Delete conversation"
-        >
-          ×
-        </button>
-      </div>
-    </div>
+    );
+  };
+
+  const serverStatusClass = clsx(
+    'w-2 h-2 rounded-full flex-shrink-0 transition-colors',
+    connected
+      ? 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.5)]'
+      : 'bg-red shadow-[0_0_6px_rgba(248,81,73,0.5)] animate-pulse',
   );
 
   return (
     <aside
-      className={`sidebar ${className} ${collapsed ? 'sidebar-collapsed' : ''}`}
-      style={{ width: sidebarWidth, minWidth: COLLAPSED_WIDTH }}
+      className={clsx(
+        'bg-bg-secondary border-r border-border flex flex-col z-10 relative min-h-0 overflow-hidden transition-transform duration-300',
+        className,
+        collapsed && 'overflow-hidden',
+      )}
+      style={{ width: sidebarWidth, minWidth: COLLAPSED_WIDTH, maxWidth: 480 }}
     >
       <div
-        className={`sidebar-resize-handle ${dragging.current ? 'dragging' : ''}`}
+        className={clsx(
+          'absolute -right-[3px] top-0 bottom-0 w-[6px] cursor-col-resize z-20 transition-colors hover:bg-blue hover:opacity-50',
+          dragging.current && 'bg-blue opacity-50',
+        )}
         onMouseDown={onResizeStart}
       />
 
       {collapsed ? (
         <>
-          <div className="sidebar-collapsed-header">
+          <div className="py-3 border-b border-border flex justify-center">
             <button
-              className="sidebar-collapse-btn"
+              className="bg-transparent border-none text-text-muted cursor-pointer text-base px-1.5 py-1 rounded transition-colors flex items-center justify-center leading-none hover:bg-bg-hover hover:text-text-primary"
               onClick={toggleCollapse}
               title="Expand sidebar"
               aria-label="Toggle sidebar"
@@ -236,13 +275,13 @@ export function Sidebar({
               &#9776;
             </button>
             <span
-              className={`server-status ${connected ? 'connected' : 'disconnected'}`}
+              className={serverStatusClass}
               title={connected ? 'Server connected' : 'Server disconnected'}
             />
           </div>
-          <div className="sidebar-collapsed-actions">
+          <div className="py-2 border-b border-border flex justify-center">
             <button
-              className="sidebar-collapsed-btn"
+              className="bg-action text-white border-none w-[30px] h-[30px] rounded-md cursor-pointer text-base font-medium flex items-center justify-center transition-colors hover:bg-action-hover hover:scale-105"
               onClick={onNew}
               title="New conversation"
               aria-label="New conversation"
@@ -250,36 +289,53 @@ export function Sidebar({
               +
             </button>
           </div>
-          <div className="conv-list-collapsed">
-            {conversations.map((c) => (
-              <button
-                key={c.id}
-                className={`conv-dot-btn ${activeTab === c.id ? 'active' : ''} ${busyIds.has(c.id) ? 'busy' : ''}`}
-                onClick={() => onSelect(c.id)}
-                title={c.title}
-                aria-label={c.title}
-              >
-                <span className={`conv-status-dot ${c.status}`} />
-              </button>
-            ))}
+          <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1">
+            {conversations.map((c) => {
+              const isActive = activeTab === c.id;
+              const isBusy = busyIds.has(c.id);
+              return (
+                <button
+                  key={c.id}
+                  className={clsx(
+                    'bg-transparent border border-transparent w-8 h-8 rounded-md cursor-pointer flex items-center justify-center transition-colors hover:bg-bg-hover',
+                    isActive && 'bg-blue-dim border-[rgba(56,139,253,0.4)]',
+                    isBusy && 'opacity-45',
+                  )}
+                  onClick={() => onSelect(c.id)}
+                  title={c.title}
+                  aria-label={c.title}
+                >
+                  <span
+                    className={clsx(
+                      'w-2 h-2 rounded-full block',
+                      c.status === 'running' && 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.5)] animate-pulse',
+                      c.status === 'detached' && 'bg-yellow shadow-[0_0_6px_rgba(210,153,34,0.5)]',
+                      c.status === 'dead' && 'bg-text-faint',
+                    )}
+                  />
+                </button>
+              );
+            })}
           </div>
         </>
       ) : (
         <>
-          <div className="sidebar-header">
-            <div className="sidebar-title-row">
-              <h1>neige</h1>
+          <div className="p-4 border-b border-border flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold m-0 tracking-[-0.02em] bg-gradient-to-br from-text-primary to-blue bg-clip-text text-transparent">
+                neige
+              </h1>
               <span
-                className={`server-status ${connected ? 'connected' : 'disconnected'}`}
+                className={serverStatusClass}
                 title={connected ? 'Server connected' : 'Server disconnected'}
               />
             </div>
-            <div className="sidebar-header-actions">
-              <Button variant="primary" size="sm" className="btn-new" onClick={onNew}>
-                <span className="btn-new-icon">+</span> New
+            <div className="flex items-center gap-1.5">
+              <Button variant="primary" size="sm" onClick={onNew}>
+                <span className="text-[15px] font-normal leading-none">+</span> New
               </Button>
               <button
-                className="sidebar-collapse-btn"
+                className="bg-transparent border-none text-text-muted cursor-pointer text-base px-1.5 py-1 rounded transition-colors flex items-center justify-center leading-none hover:bg-bg-hover hover:text-text-primary"
                 onClick={toggleCollapse}
                 title="Collapse sidebar"
                 aria-label="Toggle sidebar"
@@ -288,44 +344,53 @@ export function Sidebar({
               </button>
             </div>
           </div>
-          <div className="conv-list">
+          <div className="flex-1 overflow-y-auto p-2 min-h-0">
             {conversations.length === 0 ? (
-              <div className="empty-list">
-                <svg className="empty-list-icon" viewBox="0 0 48 48" fill="none" width="48" height="48">
+              <div className="text-text-faint text-center px-6 py-12 text-base flex flex-col items-center gap-3 animate-[fadeIn_0.3s_ease]">
+                <svg
+                  className="text-text-faint mb-1"
+                  viewBox="0 0 48 48"
+                  fill="none"
+                  width="48"
+                  height="48"
+                >
                   <rect x="6" y="10" width="36" height="28" rx="4" stroke="currentColor" strokeWidth="2" opacity="0.3" />
                   <path d="M16 22h16M16 28h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity="0.3" />
                   <circle cx="12" cy="22" r="1.5" fill="currentColor" opacity="0.3" />
                   <circle cx="12" cy="28" r="1.5" fill="currentColor" opacity="0.3" />
                 </svg>
-                <p>No conversations yet</p>
-                <button className="btn-empty-new" onClick={onNew}>
+                <p className="text-text-muted text-base m-0">No conversations yet</p>
+                <button
+                  className="mt-1 bg-bg-tertiary border border-dashed border-border-light text-text-secondary px-[18px] py-2 rounded-md cursor-pointer text-sm font-sans transition-colors hover:bg-bg-hover hover:border-blue hover:text-blue"
+                  onClick={onNew}
+                >
                   Create your first conversation
                 </button>
               </div>
             ) : (
               <>
                 {grouped.running.length > 0 && (
-                  <div className="conv-group">
-                    <div className="conv-group-label">
-                      <span className="conv-group-dot running" />
+                  <div className="mb-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-text-muted uppercase tracking-[0.06em] px-3 pt-2 pb-1 select-none">
+                      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.4)]" />
                       Running ({grouped.running.length})
                     </div>
                     {grouped.running.map(renderItem)}
                   </div>
                 )}
                 {grouped.detached.length > 0 && (
-                  <div className="conv-group">
-                    <div className="conv-group-label">
-                      <span className="conv-group-dot detached" />
+                  <div className="mb-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-text-muted uppercase tracking-[0.06em] px-3 pt-2 pb-1 select-none">
+                      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-yellow shadow-[0_0_6px_rgba(210,153,34,0.4)]" />
                       Detached ({grouped.detached.length})
                     </div>
                     {grouped.detached.map(renderItem)}
                   </div>
                 )}
                 {grouped.dead.length > 0 && (
-                  <div className="conv-group">
-                    <div className="conv-group-label">
-                      <span className="conv-group-dot dead" />
+                  <div className="mb-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-text-muted uppercase tracking-[0.06em] px-3 pt-2 pb-1 select-none">
+                      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-text-faint" />
                       Stopped ({grouped.dead.length})
                     </div>
                     {grouped.dead.map(renderItem)}

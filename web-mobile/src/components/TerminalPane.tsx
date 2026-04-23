@@ -165,21 +165,40 @@ export function TerminalPane({ conv, active, onOverview, onPrev, onNext, canCycl
     }
   }, [termRef])
 
+  const iconBtn =
+    'w-10 h-10 text-[22px] leading-none text-text-secondary grid place-items-center rounded-[8px] active:enabled:text-text-primary active:enabled:bg-bg-hover disabled:opacity-30'
+
+  const statusDotCls = (s: typeof conv.status) =>
+    [
+      'inline-block w-2 h-2 rounded-full shrink-0',
+      s === 'running' && 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.45)]',
+      s === 'detached' && 'bg-yellow',
+      s === 'dead' && 'bg-red',
+      s !== 'running' && s !== 'detached' && s !== 'dead' && 'bg-text-muted',
+    ]
+      .filter(Boolean)
+      .join(' ')
+
   return (
-    <div className="term-pane" data-active={active}>
-      <header className="term-header">
-        <button className="icon-btn" onClick={onOverview} aria-label="overview">
+    <div
+      className="absolute inset-0 flex flex-col bg-bg-primary invisible pointer-events-none opacity-0 data-[active=true]:visible data-[active=true]:pointer-events-auto data-[active=true]:opacity-100 data-[active=true]:z-[1]"
+      data-active={active}
+    >
+      <header className="flex items-center gap-0.5 py-2 px-2.5 border-b border-border bg-bg-secondary">
+        <button className={iconBtn} onClick={onOverview} aria-label="overview">
           ⊟
         </button>
-        <div className="term-title-wrap">
-          <div className="term-title">{conv.title}</div>
-          <div className="term-status">
-            <span className={`status-dot status-${conv.status}`} />
+        <div className="flex-1 min-w-0 px-1.5">
+          <div className="text-base font-medium whitespace-nowrap overflow-hidden text-ellipsis">
+            {conv.title}
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-text-muted mt-0.5">
+            <span className={statusDotCls(conv.status)} />
             <span>{status}</span>
           </div>
         </div>
         <button
-          className="icon-btn"
+          className={iconBtn}
           onClick={onPrev}
           disabled={!canCycle}
           aria-label="previous"
@@ -187,7 +206,7 @@ export function TerminalPane({ conv, active, onOverview, onPrev, onNext, canCycl
           ‹
         </button>
         <button
-          className="icon-btn"
+          className={iconBtn}
           onClick={onNext}
           disabled={!canCycle}
           aria-label="next"
@@ -195,8 +214,11 @@ export function TerminalPane({ conv, active, onOverview, onPrev, onNext, canCycl
           ›
         </button>
       </header>
-      <div className="term-body" ref={bodyRef}>
-        <div className="term-host" ref={ref} />
+      <div
+        className="flex-1 min-h-0 relative bg-bg-primary p-1.5 [touch-action:none]"
+        ref={bodyRef}
+      >
+        <div className="term-host w-full h-full" ref={ref} />
         <ScrollEdge termRef={termRef} />
         <JumpToBottom termRef={termRef} />
       </div>

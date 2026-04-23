@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Dialog, DialogContent } from '@neige/shared';
 import { searchFiles, type FileSearchEntry } from '../api';
 import type { RecentFile } from '../hooks/useConfig';
@@ -129,7 +130,7 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
 
   // Scroll selected item into view
   useEffect(() => {
-    const el = document.querySelector('.file-picker-item.selected');
+    const el = document.querySelector('[data-picker-selected="true"]');
     el?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
@@ -163,58 +164,83 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
           inputRef.current?.focus();
         }}
       >
-      <div className="file-picker" onKeyDown={handleKeyDown}>
-        <div className="file-picker-input-row">
-          <span className="file-picker-icon">{'\u{1F50D}'}</span>
+      <div
+        className="flex flex-col w-full max-h-[420px] overflow-hidden"
+        onKeyDown={handleKeyDown}
+      >
+        <div className="flex items-center px-4 py-3 border-b border-border gap-2">
+          <span className="text-base flex-shrink-0 opacity-50">{'\u{1F50D}'}</span>
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => handleChange(e.target.value)}
             placeholder="Search files by name..."
-            className="file-picker-input"
+            className="flex-1 bg-transparent border-none text-text-primary text-[15px] font-sans outline-none placeholder:text-text-faint"
           />
-          {loading && <span className="file-picker-loading" />}
+          {loading && (
+            <span className="w-[14px] h-[14px] border-2 border-border border-t-blue rounded-full animate-spin" />
+          )}
         </div>
-        <div className="file-picker-results">
+        <div className="flex-1 overflow-y-auto py-1">
           {displayList.length === 0 && !loading && (
-            <div className="file-picker-empty">
+            <div className="px-6 py-6 text-center text-text-faint text-sm">
               {query ? 'No files found' : 'No recent files. Type to search...'}
             </div>
           )}
           {hasRecent && (
-            <div className="file-picker-section-label">Recent files</div>
+            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
+              Recent files
+            </div>
           )}
           {displayList.filter((d) => d.isRecent).map((item) => {
             const idx = globalIdx++;
+            const isSelected = idx === selected;
             return (
               <button
                 key={`recent:${item.fullPath}`}
-                className={`file-picker-item ${idx === selected ? 'selected' : ''}`}
+                data-picker-selected={isSelected ? 'true' : undefined}
+                className={clsx(
+                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
+                  isSelected && 'bg-blue-dim text-text-primary',
+                )}
                 onClick={() => handleSelect(item)}
                 onMouseEnter={() => setSelected(idx)}
               >
-                <span className="file-picker-item-icon">{extIcon(item.name)}</span>
-                <span className="file-picker-item-name">{item.name}</span>
-                <span className="file-picker-item-badge">recent</span>
-                <span className="file-picker-item-path">{item.path.replace(/^\/home\/[^/]+/, '~')}</span>
+                <span className="text-sm flex-shrink-0">{extIcon(item.name)}</span>
+                <span className="font-medium whitespace-nowrap">{item.name}</span>
+                <span className="text-[9px] text-blue bg-blue-dim px-1.5 py-px rounded-[3px] flex-shrink-0 uppercase tracking-[0.04em]">
+                  recent
+                </span>
+                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
+                  {item.path.replace(/^\/home\/[^/]+/, '~')}
+                </span>
               </button>
             );
           })}
           {hasRecent && hasSearch && (
-            <div className="file-picker-section-label">Files</div>
+            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
+              Files
+            </div>
           )}
           {displayList.filter((d) => !d.isRecent).map((item) => {
             const idx = globalIdx++;
+            const isSelected = idx === selected;
             return (
               <button
                 key={`search:${item.path}`}
-                className={`file-picker-item ${idx === selected ? 'selected' : ''}`}
+                data-picker-selected={isSelected ? 'true' : undefined}
+                className={clsx(
+                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
+                  isSelected && 'bg-blue-dim text-text-primary',
+                )}
                 onClick={() => handleSelect(item)}
                 onMouseEnter={() => setSelected(idx)}
               >
-                <span className="file-picker-item-icon">{extIcon(item.name)}</span>
-                <span className="file-picker-item-name">{item.name}</span>
-                <span className="file-picker-item-path">{item.path}</span>
+                <span className="text-sm flex-shrink-0">{extIcon(item.name)}</span>
+                <span className="font-medium whitespace-nowrap">{item.name}</span>
+                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
+                  {item.path}
+                </span>
               </button>
             );
           })}

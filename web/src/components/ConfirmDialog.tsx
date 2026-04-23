@@ -26,14 +26,14 @@ export function ConfirmDialog({
     >
       <DialogContent className="max-w-md">
         <div
-          className="confirm-modal"
+          className="w-[380px] max-w-full"
           onKeyDown={(e) => {
             if (e.key === 'Enter') onConfirm();
           }}
         >
-          <h2>{title}</h2>
-          <p className="confirm-message">{message}</p>
-          <div className="modal-actions">
+          <h2 className="m-0 mb-5 text-lg font-semibold tracking-[-0.01em]">{title}</h2>
+          <p className="text-base text-text-secondary m-0 mb-5 leading-[1.5]">{message}</p>
+          <div className="flex gap-2 items-center justify-end mt-3">
             <Button variant="ghost" onClick={onCancel}>
               Cancel
             </Button>
