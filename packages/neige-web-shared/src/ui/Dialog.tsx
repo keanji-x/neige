@@ -39,6 +39,7 @@ export function DialogContent({
       <DialogPrimitive.Content
         className={clsx(
           'fixed left-1/2 top-1/2 z-51 w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
+          'max-h-[85vh] overflow-y-auto',
           'bg-bg-elevated border border-border rounded-lg shadow-lg p-6',
           'text-text-primary',
           'focus:outline-none',

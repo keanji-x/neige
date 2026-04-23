@@ -331,8 +331,14 @@ export function Sidebar({
               />
             </div>
             <div className="flex items-center gap-1.5">
-              <Button variant="primary" size="sm" onClick={onNew}>
-                <span className="text-[15px] font-normal leading-none">+</span> New
+              <Button
+                variant="primary"
+                size="icon"
+                onClick={onNew}
+                aria-label="New conversation"
+                title="New conversation"
+              >
+                <span className="text-lg leading-none">+</span>
               </Button>
               <button
                 className="bg-transparent border-none text-text-muted cursor-pointer text-base px-1.5 py-1 rounded transition-colors flex items-center justify-center leading-none hover:bg-bg-hover hover:text-text-primary"
