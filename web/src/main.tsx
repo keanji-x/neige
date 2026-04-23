@@ -13,7 +13,7 @@ import App from './App.tsx'
 // matches the cool-tinted neutrals we already had.
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Theme appearance="dark" accentColor="green" grayColor="slate" radius="medium" scaling="100%">
+    <Theme appearance="dark" accentColor="green" grayColor="slate" radius="medium" scaling="100%" style={{ height: '100%' }}>
       <ToastProvider>
         <App />
       </ToastProvider>
