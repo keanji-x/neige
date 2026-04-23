@@ -21,15 +21,18 @@ type SheetContentProps = ComponentPropsWithoutRef<
 >;
 
 /**
- * Radix Dialog portals its children outside the root <Theme>, which would
- * drop the token scope Radix Themes needs. Instead of nesting a <Theme>
- * component (which wraps in an extra div and can interfere with TextField
- * layout), we apply the `.radix-themes` class + data attributes directly
- * on the Portal's Content. CSS vars cascade to all descendants normally.
+ * Bottom-sliding sheet for mobile.
  *
- * The data-* attributes must stay in sync with whatever <Theme> is used at
- * the app root — mobile uses appearance=dark, accentColor=green,
- * grayColor=slate, radius=medium, scaling=100%.
+ * Radix Dialog portals its children to document.body — outside any root
+ * <Theme>. We restore the Radix Themes token scope by putting the
+ * `.radix-themes` class + `.dark` appearance class + the data attributes
+ * Theme would set directly on the portaled Content div. CSS vars cascade
+ * to all descendants from there. `data-has-background="false"` so Radix
+ * doesn't paint its own bg over our `bg-bg-elevated`.
+ *
+ * iOS gotchas handled:
+ * - `100dvh` (not `vh`) so the sheet accounts for the URL bar
+ * - `safe-area-inset-bottom` padding so content clears the home indicator
  */
 export function SheetContent({
   className,
@@ -47,12 +50,18 @@ export function SheetContent({
       />
       <DialogPrimitive.Content
         className={clsx(
-          'radix-themes',
+          // Radix Themes token scope — `.dark` activates dark-mode vars.
+          'radix-themes dark',
+          // Positioning and chrome.
           'fixed left-0 right-0 bottom-0 z-51 w-full',
-          'bg-bg-elevated border-t border-border rounded-t-lg shadow-lg p-6',
+          'bg-bg-elevated border-t border-border rounded-t-lg shadow-lg',
           'text-text-primary',
-          'max-h-[90vh] overflow-y-auto',
           'focus:outline-none',
+          // Height: dynamic viewport units so iOS URL bar doesn't overflow.
+          'max-h-[90dvh] overflow-y-auto',
+          // Padding: generous on sides/top, safe-area respecting at bottom.
+          'p-6 pb-[calc(env(safe-area-inset-bottom)+24px)]',
+          // Enter/exit animations.
           'data-[state=open]:animate-[neige-slide-up_200ms_ease-out]',
           'data-[state=closed]:animate-[neige-slide-down_160ms_ease-in]',
           className,
