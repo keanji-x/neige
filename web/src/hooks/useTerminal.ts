@@ -256,6 +256,19 @@ export function useTerminal(containerId: string | null) {
     const ro = new ResizeObserver(scheduleFit);
     ro.observe(container);
 
+    // When this tab becomes visible, force a resize push even if our local
+    // dimensions haven't changed — another client (e.g. phone) may have
+    // shrunk the shared PTY while we were hidden, so claude's output is now
+    // laid out for their size. Clearing lastCols/lastRows bypasses the
+    // "no-op if unchanged" short-circuit in scheduleFit.
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      lastCols = 0;
+      lastRows = 0;
+      scheduleFit();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
       disposed = true;
       clearTimeout(resizeTimer);
@@ -263,6 +276,7 @@ export function useTerminal(containerId: string | null) {
       clearTimeout(reconnectTimer);
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('resize', scheduleFit);
+      document.removeEventListener('visibilitychange', onVisibility);
       ro.disconnect();
       wsRef.current?.close(1000);
       term.dispose();
