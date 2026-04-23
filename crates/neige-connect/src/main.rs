@@ -144,7 +144,7 @@ if [ "$NEED_BUILD" = "1" ] || [ ! -x "$BIN" ]; then
     done
 
     echo "[neige] Building server..."
-    cargo build --release -p neige-server 2>&1
+    cargo build --release -p neige-server -p neige-session 2>&1
 
     # Kill old server if running (will be restarted below)
     OLD_PID=$(pgrep -f "$BIN" | grep -v $$ || true)

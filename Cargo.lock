@@ -1202,6 +1202,8 @@ dependencies = [
  "clap",
  "futures",
  "hex",
+ "libc",
+ "neige-session",
  "portable-pty",
  "rand 0.8.6",
  "reqwest",

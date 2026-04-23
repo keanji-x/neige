@@ -1,16 +1,29 @@
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+//! Per-session connection to a `neige-session-daemon`.
+//!
+//! This module used to spawn a local PTY that ran `tmux attach-session`; now
+//! the PTY lives in the daemon and we only hold a Unix-socket client to it.
+//! The broadcast/history/seq logic is unchanged — it still exists here so
+//! the WS handler's reconnect/replay protocol (seq=0 snapshot, delta replay)
+//! keeps working on top of the same `AttachResult`.
+
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
+
+use tokio::net::UnixStream;
+use tokio::sync::{broadcast, mpsc};
 use tracing::debug;
+use uuid::Uuid;
+
+use neige_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
 
 /// Rolling byte-chunk history, each chunk tagged with a monotonically
 /// increasing sequence number. Lets a reconnecting client request "everything
 /// since seq N" so it doesn't re-render content its xterm already has.
 ///
 /// When the byte budget is exceeded we evict whole chunks from the front —
-/// each chunk is at most 4 KiB (PTY read size), so granularity is fine enough.
+/// each chunk is a single DaemonMsg::Stdout frame, so granularity is fine.
 const HISTORY_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 struct History {
@@ -37,8 +50,6 @@ impl History {
         self.next_seq += 1;
         self.total_bytes += bytes.len();
         self.chunks.push_back((seq, bytes));
-        // Evict oldest chunks until we fit budget. Keep at least one so
-        // `latest_seq()` stays meaningful immediately after a big write.
         while self.total_bytes > self.max_bytes && self.chunks.len() > 1 {
             let (_, dropped) = self.chunks.pop_front().unwrap();
             self.total_bytes -= dropped.len();
@@ -51,12 +62,9 @@ impl History {
     }
 
     fn latest_seq(&self) -> u64 {
-        // `next_seq` is always 1 + the highest appended seq (or 1 if never
-        // appended — we haven't emitted anything, so "latest" is 0).
         self.next_seq.saturating_sub(1)
     }
 
-    /// Chunks strictly after `after_seq`, in order.
     fn since(&self, after_seq: u64) -> Vec<(u64, Vec<u8>)> {
         self.chunks
             .iter()
@@ -65,9 +73,6 @@ impl History {
             .collect()
     }
 
-    /// Flatten every chunk we still have into a single byte vector. Used
-    /// when a client is too far behind for a delta replay and we instead
-    /// send a reset + full redraw of whatever the buffer still contains.
     fn full_snapshot(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.total_bytes);
         for (_, bytes) in &self.chunks {
@@ -80,145 +85,170 @@ impl History {
 /// Result of `PtySession::attach` — tells the WS handler how to prime a new
 /// connection before it starts forwarding the live broadcast.
 pub enum AttachResult {
-    /// Client is caught up; nothing to send before live output.
-    UpToDate { latest_seq: u64 },
-    /// Client's `last_seq` is still in the ring; replay just the tail.
+    UpToDate {
+        latest_seq: u64,
+    },
     Delta {
         chunks: Vec<(u64, Vec<u8>)>,
         latest_seq: u64,
     },
-    /// Client missed too much (or is fresh); send a clear + full redraw.
-    /// `latest_seq` is what the client should record as its new baseline.
-    Snapshot { bytes: Vec<u8>, latest_seq: u64 },
+    Snapshot {
+        bytes: Vec<u8>,
+        latest_seq: u64,
+    },
 }
 
-/// A session backed by a real PTY — streams raw escape sequences.
+/// Writer handed to WS inbound code. Internally queues every `write_all`
+/// as a `ClientMsg::Stdin` frame on the daemon socket. We expose the old
+/// `Write + Send` shape so call sites don't have to change.
+struct FramedWriter {
+    tx: mpsc::UnboundedSender<ClientMsg>,
+}
+
+impl Write for FramedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tx
+            .send(ClientMsg::Stdin(buf.to_vec()))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "daemon gone"))?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A session backed by a `neige-session-daemon` over a Unix socket.
 pub struct PtySession {
-    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    /// Live-broadcast channel. Each message is (seq, bytes) matching what was
-    /// just appended to `history` — send happens under the same lock so an
-    /// `attach()` holding that lock sees a coherent view.
+    /// Control channel to the daemon (Stdin / Resize / Kill frames). Writes
+    /// happen on a tokio task that owns the socket's write half.
+    ctrl_tx: mpsc::UnboundedSender<ClientMsg>,
+    /// Live-broadcast: every DaemonMsg::Stdout byte gets a seq and fans out.
+    /// Send happens under the history lock so `attach()` sees a coherent view.
     pub tx: broadcast::Sender<(u64, Vec<u8>)>,
     history: Arc<Mutex<History>>,
-    _reader_handle: Option<std::thread::JoinHandle<()>>,
+    /// Flipped to false by the reader task when the daemon socket closes
+    /// (child exit / daemon crash).
+    alive: Arc<std::sync::atomic::AtomicBool>,
+    #[allow(dead_code)]
+    sock_path: PathBuf,
 }
 
 impl PtySession {
-    /// Spawn `program` in a new PTY with the given working directory.
-    pub fn spawn(
-        program: &str,
-        cwd: &str,
-        cols: u16,
-        rows: u16,
-        env: &[(String, String)],
-    ) -> Result<Self, String> {
-        let pty_system = NativePtySystem::default();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("openpty failed: {e}"))?;
+    /// Connect to the daemon for `id` and send the initial Attach. Spawns
+    /// tasks that keep the socket plumbed: reader (socket → history +
+    /// broadcast), writer (mpsc → socket), both tied to `alive`.
+    pub async fn connect(id: &Uuid, cols: u16, rows: u16) -> Result<Self, String> {
+        let sock_path = crate::session::sock_path(id);
+        let stream = UnixStream::connect(&sock_path)
+            .await
+            .map_err(|e| format!("connect daemon socket {sock_path:?}: {e}"))?;
+        let (mut rd, mut wr) = stream.into_split();
 
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg(program);
-        cmd.cwd(cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        for (k, v) in env {
-            cmd.env(k, v);
+        // Attach handshake — daemon responds with Hello{replay}.
+        write_frame(&mut wr, &ClientMsg::Attach { cols, rows })
+            .await
+            .map_err(|e| format!("send Attach: {e}"))?;
+        let first: DaemonMsg = read_frame(&mut rd)
+            .await
+            .map_err(|e| format!("read Hello: {e}"))?;
+        let replay = match first {
+            DaemonMsg::Hello { replay } => replay,
+            other => return Err(format!("expected Hello, got {other:?}")),
+        };
+
+        let history = Arc::new(Mutex::new(History::new(HISTORY_MAX_BYTES)));
+        let (tx, _) = broadcast::channel::<(u64, Vec<u8>)>(256);
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // Seed history with the replay so a WS client that attaches after us
+        // can be primed from Snapshot (not wait for the first live byte).
+        if !replay.is_empty() {
+            if let Ok(mut h) = history.lock() {
+                let seq = h.append(replay.clone());
+                let _ = tx.send((seq, replay));
+            }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("spawn failed: {e}"))?;
-
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("take_writer failed: {e}"))?;
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("clone_reader failed: {e}"))?;
-
-        let (tx, _) = broadcast::channel::<(u64, Vec<u8>)>(256);
-        let tx_clone = tx.clone();
-        let history = Arc::new(Mutex::new(History::new(HISTORY_MAX_BYTES)));
-        let history_clone = history.clone();
-
-        // Reader thread: read PTY → { assign seq + append to history + broadcast }
-        // all under the history lock. That lock order is what makes `attach()`
-        // race-free — see the comment there.
-        let handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+        // Reader: socket → (history + broadcast). Holds history lock while
+        // broadcasting so attach() sees a consistent seq.
+        let history_r = history.clone();
+        let tx_r = tx.clone();
+        let alive_r = alive.clone();
+        tokio::spawn(async move {
+            let mut rd = rd;
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let chunk = buf[..n].to_vec();
-                        if let Ok(mut h) = history_clone.lock() {
-                            let seq = h.append(chunk.clone());
-                            let _ = tx_clone.send((seq, chunk));
+                let msg: DaemonMsg = match read_frame(&mut rd).await {
+                    Ok(m) => m,
+                    Err(_) => break,
+                };
+                match msg {
+                    DaemonMsg::Stdout(bytes) => {
+                        if let Ok(mut h) = history_r.lock() {
+                            let seq = h.append(bytes.clone());
+                            let _ = tx_r.send((seq, bytes));
                         }
                     }
-                    Err(_) => break,
+                    DaemonMsg::ChildExited { code } => {
+                        tracing::info!(?code, "daemon reported child exit");
+                        break;
+                    }
+                    // A second Hello would only arrive if we re-attached;
+                    // we don't, so treat as noise.
+                    DaemonMsg::Hello { .. } => {}
                 }
             }
+            alive_r.store(false, std::sync::atomic::Ordering::Relaxed);
         });
 
-        debug!("PTY session spawned: {program}");
+        // Writer: mpsc → socket. Buffering and flushing are handled frame-
+        // by-frame inside write_frame.
+        let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
+        let alive_w = alive.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = ctrl_rx.recv().await {
+                if write_frame(&mut wr, &msg).await.is_err() {
+                    break;
+                }
+            }
+            alive_w.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        debug!("daemon attached: sock={sock_path:?}");
 
         Ok(Self {
-            master: Arc::new(Mutex::new(pair.master)),
-            writer: Arc::new(Mutex::new(writer)),
-            child: Arc::new(Mutex::new(child)),
+            ctrl_tx,
             tx,
             history,
-            _reader_handle: Some(handle),
+            alive,
+            sock_path,
         })
     }
 
-    /// Get a clone of the writer Arc for direct PTY writes without holding the manager lock.
+    /// Return a cloneable, `Write`-implementing handle the WS inbound path
+    /// can drop bytes into. Writes become ClientMsg::Stdin frames.
     pub fn writer_handle(&self) -> Arc<Mutex<Box<dyn Write + Send>>> {
-        self.writer.clone()
+        let writer: Box<dyn Write + Send> = Box::new(FramedWriter {
+            tx: self.ctrl_tx.clone(),
+        });
+        Arc::new(Mutex::new(writer))
     }
 
-    /// Resize the PTY.
+    /// Forward a resize to the daemon (last-wins at the daemon side).
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        let master = self.master.lock().map_err(|e| format!("lock: {e}"))?;
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("resize: {e}"))?;
-        Ok(())
+        self.ctrl_tx
+            .send(ClientMsg::Resize { cols, rows })
+            .map_err(|_| "daemon channel closed".to_string())
     }
 
-    /// Check if the child process is still running.
     pub fn is_alive(&self) -> bool {
-        let mut child = match self.child.lock() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        matches!(child.try_wait(), Ok(None))
+        self.alive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Atomically subscribe to live output and prepare the catch-up payload
-    /// for a (re)attaching client. Holding the history lock across both the
-    /// snapshot and the subscribe is what keeps the reader thread blocked —
-    /// so any chunk it writes after we release the lock will (a) carry a seq
-    /// strictly greater than everything we captured, and (b) be delivered to
-    /// us via the returned receiver without loss or duplication.
+    /// for a (re)attaching WS client. Holding the history lock across both
+    /// the snapshot and the subscribe blocks the socket reader — any chunk
+    /// it appends after we release will carry a strictly-greater seq and
+    /// be delivered to the returned receiver without loss.
     pub fn attach(
         &self,
         last_seq: Option<u64>,
@@ -229,16 +259,13 @@ impl PtySession {
         let earliest = history.earliest_seq();
 
         let result = match (last_seq, earliest) {
-            // Client is up to date (or ahead, which shouldn't happen normally).
             (Some(ls), _) if ls >= latest => AttachResult::UpToDate { latest_seq: latest },
-            // Client's baseline is still in the buffer → delta replay.
             (Some(ls), Some(earliest_seq)) if ls >= earliest_seq.saturating_sub(1) => {
                 AttachResult::Delta {
                     chunks: history.since(ls),
                     latest_seq: latest,
                 }
             }
-            // Fresh attach OR buffer evicted past client's last_seq → snapshot.
             _ => AttachResult::Snapshot {
                 bytes: history.full_snapshot(),
                 latest_seq: latest,
@@ -249,10 +276,7 @@ impl PtySession {
     }
 }
 
-impl Drop for PtySession {
-    fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-        }
-    }
-}
+// No explicit Drop — we deliberately do NOT kill the daemon when the
+// PtySession is dropped. Daemons must survive neige-server restarts; the
+// explicit lifecycle is `session::kill_session` called from the conversation
+// manager's `remove()`.

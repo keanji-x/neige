@@ -147,6 +147,7 @@ async fn create_conv(
     let mut mgr = state.manager.lock().await;
     let info = mgr
         .create(req)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -156,7 +157,7 @@ async fn delete_conv(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let mut mgr = state.manager.lock().await;
-    mgr.remove(&id);
+    mgr.remove(&id).await;
     StatusCode::NO_CONTENT
 }
 
@@ -184,6 +185,7 @@ async fn resume_conv(
     let mut mgr = state.manager.lock().await;
     let info = mgr
         .resume(&id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(info))
 }
@@ -548,7 +550,7 @@ async fn ws_handler(
             None => return Err((StatusCode::NOT_FOUND, "not found".to_string())),
         };
         if needs_resume {
-            let _ = mgr_lock.resume(&id);
+            let _ = mgr_lock.resume(&id).await;
         }
     }
 

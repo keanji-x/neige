@@ -94,9 +94,17 @@ async fn main() -> anyhow::Result<()> {
     if let Some(cwd) = &cli.cwd {
         cmd.cwd(cwd);
     }
-    // Inherit TERM from the parent; otherwise some programs refuse to render.
-    cmd.env("TERM", std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()));
+    // Forward every env var we have to the child. The caller (neige-server)
+    // sets the env it wants (TERM, COLORTERM, proxy vars, ...) when it spawns
+    // us, and the child should see the same environment.
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
     let child = pair.slave.spawn_command(cmd)?;
+    // Split out a separately-owned killer before the child moves into the
+    // waiter task. A ClientMsg::Kill handler calls through this.
+    let killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>> =
+        Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
     let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new(
@@ -151,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         parser.clone(),
         master.clone(),
         stdin_tx.clone(),
+        killer.clone(),
     ));
 
     // Block until the child exits.
@@ -227,6 +236,7 @@ async fn accept_loop(
     parser: SharedParser,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
+    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
 ) {
     loop {
         match listener.accept().await {
@@ -235,8 +245,11 @@ async fn accept_loop(
                 let parser = parser.clone();
                 let master = master.clone();
                 let stdin_tx = stdin_tx.clone();
+                let killer = killer.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(sock, event_rx, parser, master, stdin_tx).await {
+                    if let Err(e) =
+                        handle_client(sock, event_rx, parser, master, stdin_tx, killer).await
+                    {
                         tracing::debug!(error = %e, "client ended");
                     }
                 });
@@ -255,6 +268,7 @@ async fn handle_client(
     parser: SharedParser,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
+    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
 
@@ -318,6 +332,10 @@ async fn handle_client(
             ClientMsg::Attach { .. } => {
                 // Ignore re-attach on a live connection.
             }
+            ClientMsg::Kill => {
+                tracing::info!("client requested Kill; signaling child");
+                kill_child(&master, &killer);
+            }
         }
     }
 
@@ -325,6 +343,39 @@ async fn handle_client(
     down_task.abort();
     let _ = down_task.await;
     Ok(())
+}
+
+/// Try hard to tear down the child. We first SIGHUP the whole process group
+/// (portable-pty marks the child as its own session/pgid via setsid, so the
+/// pgid equals the child pid), then schedule a SIGKILL fallback in case the
+/// child ignored SIGHUP. Signaling the group catches transient subshells
+/// (e.g. `sh -c 'bash'` spawning a separate bash process) that a single-pid
+/// kill would miss.
+fn kill_child(
+    master: &SharedMaster,
+    killer: &Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+) {
+    let pgid = master
+        .lock()
+        .ok()
+        .and_then(|m| m.process_group_leader());
+    if let Some(pgid) = pgid {
+        // SAFETY: killpg-style negative pid targets the process group with
+        // the matching id. We created this pgid via setsid at spawn time.
+        unsafe {
+            libc::kill(-pgid, libc::SIGHUP);
+        }
+        // Hard fallback in case the child traps SIGHUP and keeps running.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        });
+    } else if let Ok(mut k) = killer.lock() {
+        // Last-resort fallback through portable-pty's killer.
+        let _ = k.kill();
+    }
 }
 
 fn apply_resize(master: &SharedMaster, parser: &SharedParser, cols: u16, rows: u16) {

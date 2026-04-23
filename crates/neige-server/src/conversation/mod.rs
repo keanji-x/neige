@@ -1,5 +1,5 @@
 use crate::pty::PtySession;
-use crate::tmux;
+use crate::session;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -346,7 +346,7 @@ impl ConversationManager {
         }
     }
 
-    pub fn create(&mut self, req: CreateConvRequest) -> Result<ConvInfo, String> {
+    pub async fn create(&mut self, req: CreateConvRequest) -> Result<ConvInfo, String> {
         let id = Uuid::new_v4();
         let cwd = if req.cwd.is_empty() {
             self.project_cwd.clone()
@@ -384,20 +384,17 @@ impl ConversationManager {
         tracing::info!(
             "spawning session {id}: command={command:?}, cwd={cwd:?}, is_git={is_git}, use_worktree={use_worktree}"
         );
-        // Create the tmux session holding the actual program; then spawn a
-        // PTY running `tmux attach-session` — that's the only thing neige
-        // directly owns. When this process dies the attach client dies but
-        // the inner program keeps running.
-        let created = tmux::create_session(&id, &command, &cwd, &env)?;
-        let attach = tmux::attach_command(&id);
-        let pty = match PtySession::spawn(&attach, &cwd, 200, 50, &[]) {
+        // Start the per-session daemon (idempotent: reuses a live one if the
+        // socket is reachable) and connect. The daemon owns the PTY so it
+        // outlives neige-server.
+        let created = session::create_session(&id, &command, &cwd, &env).await?;
+        let pty = match PtySession::connect(&id, 200, 50).await {
             Ok(pty) => pty,
             Err(e) => {
-                // Don't leave the tmux session orphaned when our own PTY
-                // allocation fails. Only rolls back sessions we just made;
-                // a pre-existing session (created = false) is not ours to kill.
+                // Roll back the daemon we just made; don't touch a
+                // pre-existing one (created = false).
                 if created {
-                    tmux::kill_session(&id);
+                    session::kill_session(&id).await;
                 }
                 return Err(e);
             }
@@ -422,7 +419,7 @@ impl ConversationManager {
     }
 
     /// Resume a detached session by spawning a new PTY with `claude --resume`.
-    pub fn resume(&mut self, id: &Uuid) -> Result<ConvInfo, String> {
+    pub async fn resume(&mut self, id: &Uuid) -> Result<ConvInfo, String> {
         let conv = self.convs.get_mut(id)
             .ok_or_else(|| "session not found".to_string())?;
 
@@ -441,18 +438,16 @@ impl ConversationManager {
             conv.cwd.clone()
         };
 
-        // Idempotent: if the tmux session from before the neige-server
-        // restart is still alive, create_session short-circuits and the
-        // `command`/env args are ignored — so the user reattaches to the
-        // same live claude. If the session is gone, this spawns a fresh
-        // one running the resume command.
-        let created = tmux::create_session(&conv.id, &command, &cwd, &env)?;
-        let attach = tmux::attach_command(&conv.id);
-        let pty = match PtySession::spawn(&attach, &cwd, 200, 50, &[]) {
+        // Idempotent: if the daemon from before the neige-server restart is
+        // still alive, create_session short-circuits and `command`/env args
+        // are ignored — the user reattaches to the same live claude. If the
+        // daemon is gone, a fresh one is spawned with the resume command.
+        let created = session::create_session(&conv.id, &command, &cwd, &env).await?;
+        let pty = match PtySession::connect(&conv.id, 200, 50).await {
             Ok(pty) => pty,
             Err(e) => {
                 if created {
-                    tmux::kill_session(&conv.id);
+                    session::kill_session(&conv.id).await;
                 }
                 return Err(e);
             }
@@ -484,11 +479,11 @@ impl ConversationManager {
     }
 
     /// Remove a conversation and clean up its session file.
-    pub fn remove(&mut self, id: &Uuid) {
-        // Kill the tmux session first so the inner program stops. Dropping
-        // the Conversation only kills our attach client, which would leave
-        // the tmux session running orphaned.
-        tmux::kill_session(id);
+    pub async fn remove(&mut self, id: &Uuid) {
+        // Kill the session daemon so the inner program stops; dropping only
+        // our socket would leave the daemon (and the claude it's running)
+        // orphaned.
+        session::kill_session(id).await;
         remove_session_file(id, &self.project_cwd);
         self.convs.remove(id);
     }

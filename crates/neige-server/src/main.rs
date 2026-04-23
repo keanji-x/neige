@@ -2,7 +2,7 @@ mod api;
 mod auth;
 mod conversation;
 mod pty;
-mod tmux;
+mod session;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -265,12 +265,9 @@ async fn main() {
         }
     }
 
-    // Verify tmux is available and pin our config. Every session runs inside
-    // a headless tmux on a private socket so it survives neige-server restart.
-    if let Err(e) = tmux::init() {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+    // Each session is supervised by a neige-session-daemon in its own
+    // process; daemons survive neige-server restarts as long as the systemd
+    // unit is configured with KillMode=process.
 
     let project_cwd = std::env::current_dir()
         .unwrap_or_default()

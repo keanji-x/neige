@@ -26,6 +26,10 @@ pub enum ClientMsg {
     Stdin(Vec<u8>),
     /// Viewport change after attach. Also latest-wins.
     Resize { cols: u16, rows: u16 },
+    /// Ask the daemon to terminate the child (SIGHUP). The daemon's
+    /// child-waiter then broadcasts ChildExited and the daemon shuts
+    /// itself down.
+    Kill,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
