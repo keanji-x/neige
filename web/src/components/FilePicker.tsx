@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Dialog, DialogContent } from '@neige/shared';
 import { searchFiles, type FileSearchEntry } from '../api';
 import type { RecentFile } from '../hooks/useConfig';
 
@@ -34,7 +35,7 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
       setQuery('');
       setSearchResults([]);
       setSelected(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      // Focus is handled via DialogContent#onOpenAutoFocus below.
     }
   }, [open, searchRoot]);
 
@@ -122,9 +123,8 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
     } else if (e.key === 'Enter' && displayList.length > 0) {
       e.preventDefault();
       handleSelect(displayList[selected]);
-    } else if (e.key === 'Escape') {
-      onClose();
     }
+    // Escape handled by Radix Dialog via onOpenChange
   };
 
   // Scroll selected item into view
@@ -132,8 +132,6 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
     const el = document.querySelector('.file-picker-item.selected');
     el?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
-
-  if (!open) return null;
 
   const extIcon = (name: string) => {
     const ext = name.split('.').pop()?.toLowerCase() || '';
@@ -152,8 +150,20 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
   let globalIdx = 0;
 
   return (
-    <div className="file-picker-overlay" onClick={onClose}>
-      <div className="file-picker" onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-w-xl p-0"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
+      >
+      <div className="file-picker" onKeyDown={handleKeyDown}>
         <div className="file-picker-input-row">
           <span className="file-picker-icon">{'\u{1F50D}'}</span>
           <input
@@ -210,6 +220,7 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
           })}
         </div>
       </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '@neige/shared'
 import './App.css'
 import { useAuth } from './useAuth'
 import { useConversations } from './useConversations'
@@ -20,6 +21,7 @@ function App() {
   const { state: authState, markAuthed, markAnonymous } = useAuth()
   const { conversations, connected, refresh } = useConversations()
   const stack = useCardStack()
+  const { toast } = useToast()
   const [showAdd, setShowAdd] = useState(false)
   const [menuId, setMenuId] = useState<string | null>(null)
 
@@ -90,13 +92,31 @@ function App() {
         <CardMenu
           conv={menuConv}
           onRename={async (title) => {
-            await renameConversation(menuConv.id, title)
-            await refresh()
+            try {
+              await renameConversation(menuConv.id, title)
+              await refresh()
+            } catch (err) {
+              toast({
+                variant: 'error',
+                title: 'Rename failed',
+                description: err instanceof Error ? err.message : String(err),
+              })
+              throw err
+            }
           }}
           onDelete={async () => {
-            await deleteConversation(menuConv.id)
-            removeCard(menuConv.id)
-            await refresh()
+            try {
+              await deleteConversation(menuConv.id)
+              removeCard(menuConv.id)
+              await refresh()
+            } catch (err) {
+              toast({
+                variant: 'error',
+                title: 'Delete failed',
+                description: err instanceof Error ? err.message : String(err),
+              })
+              throw err
+            }
           }}
           onClose={() => setMenuId(null)}
         />

@@ -1,6 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import clsx from 'clsx';
-import type { ReactNode } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
 interface DialogProps {
   open: boolean;
@@ -16,12 +16,17 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
   );
 }
 
-interface DialogContentProps {
-  className?: string;
-  children: ReactNode;
-}
+// Accept every prop Radix's Content accepts (onOpenAutoFocus,
+// onInteractOutside, etc.) so callers can preserve custom focus targets.
+type DialogContentProps = ComponentPropsWithoutRef<
+  typeof DialogPrimitive.Content
+>;
 
-export function DialogContent({ className, children }: DialogContentProps) {
+export function DialogContent({
+  className,
+  children,
+  ...props
+}: DialogContentProps) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
@@ -34,13 +39,14 @@ export function DialogContent({ className, children }: DialogContentProps) {
       <DialogPrimitive.Content
         className={clsx(
           'fixed left-1/2 top-1/2 z-51 w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
-          'bg-bg-secondary border border-border rounded-lg shadow-lg p-6',
+          'bg-bg-elevated border border-border rounded-lg shadow-lg p-6',
           'text-text-primary',
           'focus:outline-none',
           'data-[state=open]:animate-[neige-scale-in_160ms_ease-out]',
           'data-[state=closed]:animate-[neige-scale-out_120ms_ease-in]',
           className,
         )}
+        {...props}
       >
         {children}
       </DialogPrimitive.Content>

@@ -6,6 +6,8 @@
  *
  * To re-theme: edit this file and both frontends automatically follow.
  */
+@custom-variant touch (@media (hover: none) and (pointer: coarse));
+
 @theme {
   /* Surfaces */
   --color-bg-primary: #0d1117;
@@ -13,6 +15,9 @@
   --color-bg-tertiary: #1c2128;
   --color-bg-hover: #1f2937;
   --color-bg-active: #262c36;
+  /* Elevated surface — one step above bg-secondary. Used by Dialog/Sheet
+     so modals feel layered over the sidebar/overview rather than flush. */
+  --color-bg-elevated: #1f242c;
 
   /* Borders */
   --color-border: #30363d;
@@ -34,6 +39,13 @@
   --color-red: #f85149;
   --color-red-dim: rgb(248 81 73 / 0.1);
   --color-yellow: #d29922;
+
+  /* Semantic accents — decouple action color (buttons) from status color
+     (running dots). Same green today, but separation lets one drift without
+     breaking the other. */
+  --color-action: var(--color-green);
+  --color-action-hover: var(--color-green-hover);
+  --color-status-running: var(--color-green-bright);
 
   /* Typography */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

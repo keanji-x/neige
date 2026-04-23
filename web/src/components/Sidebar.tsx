@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@neige/shared';
 import type { ConvInfo } from '../types';
 import { PortForwardPanel } from './PortForwardPanel';
 import type { PortForward } from './PortForwardPanel';
@@ -205,6 +206,7 @@ export function Sidebar({
             onDelete(c.id);
           }}
           title="Delete"
+          aria-label="Delete conversation"
         >
           ×
         </button>
@@ -229,6 +231,7 @@ export function Sidebar({
               className="sidebar-collapse-btn"
               onClick={toggleCollapse}
               title="Expand sidebar"
+              aria-label="Toggle sidebar"
             >
               &#9776;
             </button>
@@ -238,7 +241,12 @@ export function Sidebar({
             />
           </div>
           <div className="sidebar-collapsed-actions">
-            <button className="sidebar-collapsed-btn" onClick={onNew} title="New conversation">
+            <button
+              className="sidebar-collapsed-btn"
+              onClick={onNew}
+              title="New conversation"
+              aria-label="New conversation"
+            >
               +
             </button>
           </div>
@@ -249,6 +257,7 @@ export function Sidebar({
                 className={`conv-dot-btn ${activeTab === c.id ? 'active' : ''} ${busyIds.has(c.id) ? 'busy' : ''}`}
                 onClick={() => onSelect(c.id)}
                 title={c.title}
+                aria-label={c.title}
               >
                 <span className={`conv-status-dot ${c.status}`} />
               </button>
@@ -266,13 +275,14 @@ export function Sidebar({
               />
             </div>
             <div className="sidebar-header-actions">
-              <button className="btn-new" onClick={onNew}>
+              <Button variant="primary" size="sm" className="btn-new" onClick={onNew}>
                 <span className="btn-new-icon">+</span> New
-              </button>
+              </Button>
               <button
                 className="sidebar-collapse-btn"
                 onClick={toggleCollapse}
                 title="Collapse sidebar"
+                aria-label="Toggle sidebar"
               >
                 &#9664;
               </button>

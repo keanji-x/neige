@@ -27,7 +27,7 @@ const variantClasses: Record<ButtonVariant, string> = {
   default:
     'bg-bg-tertiary text-text-primary border border-border hover:bg-bg-hover',
   primary:
-    'bg-green text-white border border-transparent hover:bg-green-hover',
+    'bg-action text-white border border-transparent hover:bg-action-hover',
   ghost:
     'bg-transparent text-text-primary hover:bg-bg-hover border border-transparent',
   outline:
@@ -37,10 +37,10 @@ const variantClasses: Record<ButtonVariant, string> = {
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
-  sm: 'h-7 px-2.5 text-xs',
-  md: 'h-8 px-3 text-sm',
-  lg: 'h-10 px-4 text-base',
-  icon: 'h-8 w-8 p-0',
+  sm: 'h-7 px-2.5 text-xs touch:h-9 touch:px-3',
+  md: 'h-8 px-3 text-sm touch:h-11 touch:px-4 touch:text-base',
+  lg: 'h-10 px-4 text-base touch:h-12 touch:px-5',
+  icon: 'h-8 w-8 p-0 touch:h-11 touch:w-11',
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(

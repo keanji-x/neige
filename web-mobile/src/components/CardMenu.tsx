@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Sheet, SheetContent } from '@neige/shared'
 import type { ConvInfo } from '../types'
 
 interface Props {
@@ -71,8 +72,14 @@ export function CardMenu({ conv, onRename, onDelete, onClose }: Props) {
   }
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet sheet-menu" onClick={(e) => e.stopPropagation()}>
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="p-0">
+        <div className="sheet sheet-menu">
         <header className="sheet-head">
           <div className="sheet-menu-head">
             <div className="sheet-menu-title">{conv.title}</div>
@@ -159,7 +166,8 @@ export function CardMenu({ conv, onRename, onDelete, onClose }: Props) {
             </div>
           </div>
         )}
-      </div>
-    </div>
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }

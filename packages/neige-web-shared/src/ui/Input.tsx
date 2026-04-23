@@ -13,7 +13,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       ref={ref}
       type={type}
       className={clsx(
-        'flex h-8 w-full rounded-md border border-border bg-bg-tertiary px-3 text-sm',
+        'flex h-8 touch:h-11 w-full rounded-md border border-border bg-bg-tertiary px-3 text-sm',
         'text-text-primary placeholder:text-text-muted',
         'focus:outline-none focus:ring-2 focus:ring-blue focus:border-blue',
         'disabled:cursor-not-allowed disabled:opacity-50',

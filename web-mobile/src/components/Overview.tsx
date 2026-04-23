@@ -1,3 +1,4 @@
+import { Button } from '@neige/shared'
 import type { ConvInfo } from '../types'
 import { useCardActivity } from '../cardActivity'
 import { useLongPress } from '../useLongPress'
@@ -77,9 +78,15 @@ export function Overview({
         )}
       </main>
 
-      <button className="fab" onClick={onAdd} aria-label="add card">
+      <Button
+        variant="primary"
+        size="icon"
+        className="rounded-full h-14 w-14 fixed bottom-6 right-6 shadow-lg text-2xl"
+        onClick={onAdd}
+        aria-label="add card"
+      >
         +
-      </button>
+      </Button>
     </div>
   )
 }

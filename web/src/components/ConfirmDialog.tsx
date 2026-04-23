@@ -1,3 +1,5 @@
+import { Button, Dialog, DialogContent } from '@neige/shared';
+
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
@@ -15,29 +17,32 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  if (!open) return null;
-
   return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div
-        className="modal confirm-modal"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel();
-          if (e.key === 'Enter') onConfirm();
-        }}
-      >
-        <h2>{title}</h2>
-        <p className="confirm-message">{message}</p>
-        <div className="modal-actions">
-          <button className="btn-cancel" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="btn-danger" onClick={onConfirm} autoFocus>
-            {confirmLabel}
-          </button>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-md">
+        <div
+          className="confirm-modal"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onConfirm();
+          }}
+        >
+          <h2>{title}</h2>
+          <p className="confirm-message">{message}</p>
+          <div className="modal-actions">
+            <Button variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onConfirm} autoFocus>
+              {confirmLabel}
+            </Button>
+          </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

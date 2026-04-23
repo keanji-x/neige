@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Dialog, DialogContent } from '@neige/shared';
 import type { RecentCommand } from '../hooks/useConfig';
 import type { ConvInfo } from '../types';
 
@@ -27,11 +28,8 @@ export function QuickLauncher({
     if (open) {
       setQuery('');
       setSelected(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
-
-  if (!open) return null;
 
   const lq = query.toLowerCase();
 
@@ -92,9 +90,8 @@ export function QuickLauncher({
     } else if (e.key === 'Enter' && items.length > 0) {
       e.preventDefault();
       handleSelect(items[selected]);
-    } else if (e.key === 'Escape') {
-      onClose();
     }
+    // Escape handled by Radix Dialog via onOpenChange
   };
 
   useEffect(() => {
@@ -107,8 +104,20 @@ export function QuickLauncher({
   let globalIdx = 0;
 
   return (
-    <div className="file-picker-overlay" onClick={onClose}>
-      <div className="file-picker" onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-w-xl p-0"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
+      >
+      <div className="file-picker" onKeyDown={handleKeyDown}>
         <div className="file-picker-input-row">
           <span className="file-picker-icon">{'\u{26A1}'}</span>
           <input
@@ -164,6 +173,7 @@ export function QuickLauncher({
           })}
         </div>
       </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

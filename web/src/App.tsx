@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type DockviewApi } from 'dockview';
+import { Dialog, DialogContent, useToast } from '@neige/shared';
 import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
 import { CreateDialog } from './components/CreateDialog';
@@ -14,6 +15,7 @@ import './App.css';
 function App() {
   const { conversations, connected, create, rename, remove } = useConversations();
   const { config, update: updateConfig } = useConfig();
+  const { toast } = useToast();
   const [showCreate, setShowCreate] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showQuickLauncher, setShowQuickLauncher] = useState(false);
@@ -65,18 +67,26 @@ function App() {
 
   const handleCreate = useCallback(
     async (req: CreateConvRequest) => {
-      const conv = await create(req);
-      openTab(conv.id, conv.title);
-      // Save to recent commands
-      const recent = config.recentCommands || [];
-      const entry = { program: req.program, cwd: req.cwd, title: req.title, use_worktree: req.use_worktree };
-      // Deduplicate by program+cwd
-      const filtered = recent.filter(
-        (r) => !(r.program === entry.program && r.cwd === entry.cwd),
-      );
-      updateConfig({ recentCommands: [entry, ...filtered].slice(0, 10) });
+      try {
+        const conv = await create(req);
+        openTab(conv.id, conv.title);
+        // Save to recent commands
+        const recent = config.recentCommands || [];
+        const entry = { program: req.program, cwd: req.cwd, title: req.title, use_worktree: req.use_worktree };
+        // Deduplicate by program+cwd
+        const filtered = recent.filter(
+          (r) => !(r.program === entry.program && r.cwd === entry.cwd),
+        );
+        updateConfig({ recentCommands: [entry, ...filtered].slice(0, 10) });
+      } catch (err) {
+        toast({
+          variant: 'error',
+          title: 'Failed to create conversation',
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
-    [create, openTab, config.recentCommands, updateConfig],
+    [create, openTab, config.recentCommands, updateConfig, toast],
   );
 
   const openFile = useCallback(
@@ -173,15 +183,23 @@ function App() {
   // Sidebar delete = real delete with confirmation
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return;
-    const { id } = deleteTarget;
+    const { id, title } = deleteTarget;
     const api = dockviewApiRef.current;
     if (api) {
       const panel = api.getPanel(id);
       if (panel) api.removePanel(panel);
     }
-    await remove(id);
+    try {
+      await remove(id);
+    } catch (err) {
+      toast({
+        variant: 'error',
+        title: `Failed to delete "${title}"`,
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
     setDeleteTarget(null);
-  }, [deleteTarget, remove]);
+  }, [deleteTarget, remove, toast]);
 
   // Sync conversation titles → dockview tab titles
   useEffect(() => {
@@ -236,9 +254,9 @@ function App() {
         recentCommands={config.recentCommands || []}
         conversations={conversations}
       />
-      {showUrlInput && (
-        <div className="url-input-overlay" onClick={() => setShowUrlInput(false)}>
-          <div className="url-input-dialog" onClick={(e) => e.stopPropagation()}>
+      <Dialog open={showUrlInput} onOpenChange={setShowUrlInput}>
+        <DialogContent className="max-w-xl p-0">
+          <div className="url-input-dialog">
             <input
               className="url-input-field"
               autoFocus
@@ -256,14 +274,12 @@ function App() {
                     setShowUrlInput(false);
                   }
                 }
-                if (e.key === 'Escape') {
-                  setShowUrlInput(false);
-                }
+                // Escape handled by Radix Dialog via onOpenChange
               }}
             />
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
       <FilePicker
         open={showFilePicker}
         onClose={() => setShowFilePicker(false)}

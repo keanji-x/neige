@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Sheet, SheetContent } from '@neige/shared'
 import { browseDir } from '../api'
 import type { BrowseResponse } from '../types'
 
@@ -50,8 +51,14 @@ export function DirPicker({ initial, onPick, onClose }: Props) {
   const currentPath = data?.path ?? initial
 
   return (
-    <div className="dir-picker-backdrop" onClick={onClose}>
-      <div className="dir-picker" onClick={(e) => e.stopPropagation()}>
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="p-0 max-h-[100vh] h-[100vh] rounded-t-lg">
+        <div className="dir-picker">
         <header className="dir-head">
           <div className="dir-head-main">
             <div className="dir-head-title">选择目录</div>
@@ -99,7 +106,8 @@ export function DirPicker({ initial, onPick, onClose }: Props) {
               </button>
             ))}
         </div>
-      </div>
-    </div>
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button, Dialog, DialogContent } from '@neige/shared';
 import type { CreateConvRequest, DirEntry } from '../types';
 import { browseDir, isGitRepo } from '../api';
 import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
@@ -46,7 +47,8 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       setShowBrowser(false);
       setSuggestions([]);
       setShowSuggestions(false);
-      setTimeout(() => titleRef.current?.focus(), 50);
+      // Title focus is handled via DialogContent#onOpenAutoFocus below, which
+      // fires after Radix has installed its focus trap — avoids racing with it.
     }
   }, [open, config.proxy]);
 
@@ -195,10 +197,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit();
-    if (e.key === 'Escape' && !showSuggestions) onClose();
   };
-
-  if (!open) return null;
 
   // Breadcrumb segments from cwd
   const cwdSegments = cwd
@@ -206,8 +205,28 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     : [];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-w-xl"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          titleRef.current?.focus();
+        }}
+        onEscapeKeyDown={(e) => {
+          // Escape while autocomplete is open dismisses just the dropdown,
+          // matching pre-Radix behavior. Otherwise Radix closes the dialog.
+          if (showSuggestions) {
+            e.preventDefault();
+            setShowSuggestions(false);
+          }
+        }}
+      >
+      <div className="modal" onKeyDown={handleKeyDown}>
         <h2>New Conversation</h2>
 
         {(config.recentCommands?.length ?? 0) > 0 && (
@@ -402,14 +421,15 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           <div className="modal-hint">
             <kbd>⌘</kbd> + <kbd>Enter</kbd> to create
           </div>
-          <button className="btn-cancel" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button className="btn-create" onClick={handleSubmit}>
+          </Button>
+          <Button variant="primary" onClick={handleSubmit}>
             Create
-          </button>
+          </Button>
         </div>
       </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

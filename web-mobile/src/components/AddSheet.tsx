@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Button, Sheet, SheetContent } from '@neige/shared'
 import type { ConvInfo, CreateConvRequest } from '../types'
 import { getConfig, saveConfig } from '../api'
 import { DirPicker } from './DirPicker'
@@ -37,42 +38,49 @@ export function AddSheet({
   const [mode, setMode] = useState<Mode>(available.length > 0 ? 'existing' : 'new')
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <header className="sheet-head">
-          <div className="sheet-tabs">
-            <button
-              className={`sheet-tab${mode === 'existing' ? ' active' : ''}`}
-              onClick={() => setMode('existing')}
-            >
-              加入已有
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="p-0">
+        <div className="sheet">
+          <header className="sheet-head">
+            <div className="sheet-tabs">
+              <button
+                className={`sheet-tab${mode === 'existing' ? ' active' : ''}`}
+                onClick={() => setMode('existing')}
+              >
+                加入已有
+              </button>
+              <button
+                className={`sheet-tab${mode === 'new' ? ' active' : ''}`}
+                onClick={() => setMode('new')}
+              >
+                新建
+              </button>
+            </div>
+            <button className="link-btn" onClick={onClose}>
+              取消
             </button>
-            <button
-              className={`sheet-tab${mode === 'new' ? ' active' : ''}`}
-              onClick={() => setMode('new')}
-            >
-              新建
-            </button>
+          </header>
+          <div className="sheet-body">
+            {mode === 'existing' && (
+              <ExistingList
+                conversations={conversations}
+                available={available}
+                onPick={onPickExisting}
+                onPickAll={() => onPickMany(available.map((c) => c.id))}
+              />
+            )}
+            {mode === 'new' && (
+              <NewSessionForm conversations={conversations} onCreate={onCreate} />
+            )}
           </div>
-          <button className="link-btn" onClick={onClose}>
-            取消
-          </button>
-        </header>
-        <div className="sheet-body">
-          {mode === 'existing' && (
-            <ExistingList
-              conversations={conversations}
-              available={available}
-              onPick={onPickExisting}
-              onPickAll={() => onPickMany(available.map((c) => c.id))}
-            />
-          )}
-          {mode === 'new' && (
-            <NewSessionForm conversations={conversations} onCreate={onCreate} />
-          )}
         </div>
-      </div>
-    </div>
+      </SheetContent>
+    </Sheet>
   )
 }
 
@@ -297,9 +305,14 @@ function NewSessionForm({
 
       {err && <div className="form-err">{err}</div>}
 
-      <button type="submit" className="submit-btn" disabled={!canSubmit}>
+      <Button
+        type="submit"
+        variant="primary"
+        className="w-full touch:h-12"
+        disabled={!canSubmit}
+      >
         {pending ? '创建中…' : '创建 session'}
-      </button>
+      </Button>
     </form>
   )
 }

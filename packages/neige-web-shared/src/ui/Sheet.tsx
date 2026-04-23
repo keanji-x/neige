@@ -1,6 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import clsx from 'clsx';
-import type { ReactNode } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
 interface SheetProps {
   open: boolean;
@@ -16,12 +16,15 @@ export function Sheet({ open, onOpenChange, children }: SheetProps) {
   );
 }
 
-interface SheetContentProps {
-  className?: string;
-  children: ReactNode;
-}
+type SheetContentProps = ComponentPropsWithoutRef<
+  typeof DialogPrimitive.Content
+>;
 
-export function SheetContent({ className, children }: SheetContentProps) {
+export function SheetContent({
+  className,
+  children,
+  ...props
+}: SheetContentProps) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
@@ -34,7 +37,7 @@ export function SheetContent({ className, children }: SheetContentProps) {
       <DialogPrimitive.Content
         className={clsx(
           'fixed left-0 right-0 bottom-0 z-51 w-full',
-          'bg-bg-secondary border-t border-border rounded-t-lg shadow-lg p-6',
+          'bg-bg-elevated border-t border-border rounded-t-lg shadow-lg p-6',
           'text-text-primary',
           'max-h-[90vh] overflow-y-auto',
           'focus:outline-none',
@@ -42,6 +45,7 @@ export function SheetContent({ className, children }: SheetContentProps) {
           'data-[state=closed]:animate-[neige-slide-down_160ms_ease-in]',
           className,
         )}
+        {...props}
       >
         {children}
       </DialogPrimitive.Content>
