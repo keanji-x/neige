@@ -1,5 +1,4 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { Theme } from '@radix-ui/themes';
 import clsx from 'clsx';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
@@ -21,6 +20,17 @@ type SheetContentProps = ComponentPropsWithoutRef<
   typeof DialogPrimitive.Content
 >;
 
+/**
+ * Radix Dialog portals its children outside the root <Theme>, which would
+ * drop the token scope Radix Themes needs. Instead of nesting a <Theme>
+ * component (which wraps in an extra div and can interfere with TextField
+ * layout), we apply the `.radix-themes` class + data attributes directly
+ * on the Portal's Content. CSS vars cascade to all descendants normally.
+ *
+ * The data-* attributes must stay in sync with whatever <Theme> is used at
+ * the app root — mobile uses appearance=dark, accentColor=green,
+ * grayColor=slate, radius=medium, scaling=100%.
+ */
 export function SheetContent({
   className,
   children,
@@ -37,6 +47,7 @@ export function SheetContent({
       />
       <DialogPrimitive.Content
         className={clsx(
+          'radix-themes',
           'fixed left-0 right-0 bottom-0 z-51 w-full',
           'bg-bg-elevated border-t border-border rounded-t-lg shadow-lg p-6',
           'text-text-primary',
@@ -46,21 +57,16 @@ export function SheetContent({
           'data-[state=closed]:animate-[neige-slide-down_160ms_ease-in]',
           className,
         )}
+        data-is-root-theme="false"
+        data-accent-color="green"
+        data-gray-color="slate"
+        data-has-background="false"
+        data-panel-background="solid"
+        data-radius="medium"
+        data-scaling="100"
         {...props}
       >
-        {/* Radix Dialog portals outside the root <Theme>, which would drop
-            token scope. Re-apply Theme here so <TextField>/<Button>/etc.
-            inside the sheet still see the tokens. hasBackground=false so we
-            don't double up the sheet's own bg. */}
-        <Theme
-          appearance="dark"
-          accentColor="green"
-          grayColor="slate"
-          radius="medium"
-          hasBackground={false}
-        >
-          {children}
-        </Theme>
+        {children}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
