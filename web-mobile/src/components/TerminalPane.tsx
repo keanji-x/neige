@@ -200,7 +200,12 @@ export function TerminalPane({ conv, active, onOverview, onPrev, onNext, canCycl
         <ScrollEdge termRef={termRef} />
         <JumpToBottom termRef={termRef} />
       </div>
-      <KeyBar onKey={sendKey} />
+      <KeyBar
+        onKey={sendKey}
+        onAction={(action) => {
+          if (action === 'scrollBottom') termRef.current?.scrollToBottom()
+        }}
+      />
       <ComposeBar busy={busy} onSend={sendText} onStop={() => sendText('\x1b')} />
     </div>
   )
