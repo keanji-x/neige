@@ -3,4 +3,5 @@ resolver = "3"
 members = [
     "crates/neige-server",
     "crates/neige-connect",
+    "crates/neige-session",
 ]

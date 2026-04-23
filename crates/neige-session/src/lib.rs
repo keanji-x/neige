@@ -1,0 +1,78 @@
+//! Wire protocol + framing helpers shared between the daemon and its clients.
+//!
+//! A client (neige-server, or the standalone test CLI) opens the daemon's
+//! Unix socket, sends `ClientMsg::Attach {cols, rows}` as the first frame,
+//! then reads a `DaemonMsg::Hello { replay }` whose `replay` is the bytes
+//! needed to reproduce the current screen state in a fresh VT (produced by
+//! `vt100::Screen::contents_formatted`). From there it's a duplex stream of
+//! `ClientMsg::Stdin` / `ClientMsg::Resize` upstream and `DaemonMsg::Stdout`
+//! / `DaemonMsg::ChildExited` downstream.
+//!
+//! Framing: length-prefix u32 big-endian + bincode-serde-encoded payload.
+
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// Cap on a single frame. Anything larger is either a bug or hostile.
+pub const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ClientMsg {
+    /// First message on every connection. Tells the daemon the client's
+    /// viewport so the PTY can be sized for it on first attach (latest-
+    /// attach-wins for subsequent clients).
+    Attach { cols: u16, rows: u16 },
+    /// Raw bytes from the client's keyboard → PTY stdin.
+    Stdin(Vec<u8>),
+    /// Viewport change after attach. Also latest-wins.
+    Resize { cols: u16, rows: u16 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DaemonMsg {
+    /// Sent once right after `Attach`. `replay` is
+    /// `vt100::Screen::contents_formatted()` — feed it straight into the
+    /// client's terminal and the screen matches the daemon's current grid.
+    Hello { replay: Vec<u8> },
+    /// Live PTY output, forwarded as it arrives.
+    Stdout(Vec<u8>),
+    /// The child program exited. Daemon will shut down right after this.
+    ChildExited { code: Option<i32> },
+}
+
+fn bincode_config() -> bincode::config::Configuration {
+    bincode::config::standard()
+}
+
+pub async fn write_frame<T, W>(w: &mut W, msg: &T) -> anyhow::Result<()>
+where
+    T: Serialize,
+    W: AsyncWrite + Unpin,
+{
+    let buf = bincode::serde::encode_to_vec(msg, bincode_config())?;
+    if buf.len() > MAX_FRAME {
+        anyhow::bail!("frame too large: {} bytes", buf.len());
+    }
+    let len = u32::try_from(buf.len())?.to_be_bytes();
+    w.write_all(&len).await?;
+    w.write_all(&buf).await?;
+    w.flush().await?;
+    Ok(())
+}
+
+pub async fn read_frame<T, R>(r: &mut R) -> anyhow::Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+    R: AsyncRead + Unpin,
+{
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_FRAME {
+        anyhow::bail!("incoming frame too large: {len} bytes");
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).await?;
+    let (msg, _) = bincode::serde::decode_from_slice(&buf, bincode_config())?;
+    Ok(msg)
+}
