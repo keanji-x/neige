@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { searchFiles, type FileSearchEntry } from '../api';
 import type { RecentFile } from '../hooks/useConfig';
 
-interface FileEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-}
+type FileEntry = FileSearchEntry;
 
 interface DisplayItem {
   name: string;
@@ -45,13 +42,9 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
     if (!searchRoot) return;
     setLoading(true);
     try {
-      const url = `/api/files?path=${encodeURIComponent(searchRoot)}${q ? `&query=${encodeURIComponent(q)}` : ''}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data: FileEntry[] = await res.json();
-        setSearchResults(data);
-        setSelected(0);
-      }
+      const data = await searchFiles(searchRoot, q || undefined);
+      setSearchResults(data);
+      setSelected(0);
     } catch {
       // ignore
     } finally {
