@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getConfig, saveConfig } from '../api';
 
 import type { PortForward } from '../components/PortForwardPanel';
 
@@ -29,27 +30,25 @@ export function useConfig() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/config', { signal: controller.signal })
-      .then((r) => r.json())
+    let cancelled = false;
+    getConfig()
       .then((data) => {
-        setConfig(data);
+        if (cancelled) return;
+        setConfig(data as NeigeConfig);
         setLoaded(true);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setLoaded(true);
+        if (!cancelled) setLoaded(true);
       });
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const update = useCallback(async (patch: Partial<NeigeConfig>) => {
     const next = { ...configRef.current, ...patch };
     setConfig(next);
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(next),
-    });
+    await saveConfig(next as Record<string, unknown>);
   }, []);
 
   return { config, update, loaded };
