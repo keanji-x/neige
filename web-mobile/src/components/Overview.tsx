@@ -1,4 +1,3 @@
-import clsx from 'clsx'
 import { Button } from '@neige/shared'
 import type { ConvInfo } from '../types'
 import { useCardActivity } from '../cardActivity'
@@ -41,27 +40,24 @@ export function Overview({
   const orphans = cards.length - items.length
 
   return (
-    <div className="absolute inset-0 z-[2] bg-bg-primary flex flex-col">
-      <header className="flex items-center justify-between py-4 px-[18px] border-b border-border bg-bg-secondary">
+    <div className="overview">
+      <header className="list-header">
         <div>
-          <div className="text-[18px] font-semibold">neige</div>
-          <div className="text-[12px] text-text-muted mt-0.5">
+          <div className="list-title">neige</div>
+          <div className="list-subtitle">
             {connected ? `${items.length} cards in stack` : 'reconnecting…'}
           </div>
         </div>
-        <button
-          className="text-text-muted text-sm px-2.5 py-1.5 active:text-text-primary"
-          onClick={onLogout}
-        >
+        <button className="link-btn" onClick={onLogout}>
           logout
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+      <main className="overview-main">
         {items.length === 0 && (
-          <div className="py-12 px-6 text-center text-text-muted">
+          <div className="empty">
             <p>栈是空的</p>
-            <p className="text-sm mt-1">点下面 + 从已有会话里挑一个加进来</p>
+            <p className="empty-hint">点下面 + 从已有会话里挑一个加进来</p>
           </div>
         )}
 
@@ -76,7 +72,7 @@ export function Overview({
         ))}
 
         {orphans > 0 && (
-          <div className="py-2.5 px-3 text-text-muted text-[12px] text-center border border-dashed border-border rounded-[8px]">
+          <div className="orphan-note">
             {orphans} card(s) 已从 server 消失，已保留占位
           </div>
         )}
@@ -111,14 +107,9 @@ function OverviewCard({
   const longPress = useLongPress(onLongPress, 450)
 
   return (
-    <div
-      className={clsx(
-        'relative bg-bg-secondary border border-border rounded-[12px] overflow-hidden flex active:bg-bg-hover',
-        hasUnread && 'border-green-dim',
-      )}
-    >
+    <div className={`card${hasUnread ? ' card-unread' : ''}`}>
       <button
-        className="flex-1 flex flex-col gap-1 py-[14px] pl-4 pr-[14px] text-left min-w-0"
+        className="card-body"
         onClick={() => {
           if (!longPress.didFire()) onActivate()
         }}
@@ -128,44 +119,20 @@ function OverviewCard({
         onTouchCancel={longPress.onTouchCancel}
         onContextMenu={longPress.onContextMenu}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <span
-            className={clsx(
-              'inline-block w-2 h-2 rounded-full shrink-0',
-              conv.status === 'running' &&
-                'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.45)]',
-              conv.status === 'detached' && 'bg-yellow',
-              conv.status === 'dead' && 'bg-red',
-              conv.status !== 'running' &&
-                conv.status !== 'detached' &&
-                conv.status !== 'dead' &&
-                'bg-text-muted',
-            )}
-          />
-          <span className="text-[15px] font-medium whitespace-nowrap overflow-hidden text-ellipsis">
-            {conv.title}
-          </span>
-          {activity.busy && (
-            <span
-              className="w-2 h-2 rounded-full bg-status-running ml-0.5 animate-[pulse-green_1.4s_ease-in-out_infinite]"
-              title="working…"
-            />
-          )}
+        <div className="card-head">
+          <span className={`status-dot status-${conv.status}`} />
+          <span className="card-title">{conv.title}</span>
+          {activity.busy && <span className="card-busy" title="working…" />}
         </div>
-        <div className="text-[12px] text-text-muted font-mono whitespace-nowrap overflow-hidden text-ellipsis">
-          {shortCwd(conv.effective_cwd)}
-        </div>
+        <div className="card-meta">{shortCwd(conv.effective_cwd)}</div>
       </button>
       {hasUnread && (
-        <span
-          className="shrink-0 min-w-[22px] h-[22px] px-[7px] self-center mr-1 bg-red text-white rounded-[11px] text-[12px] font-semibold grid place-items-center leading-none"
-          aria-label={`${activity.completedBursts} unread`}
-        >
+        <span className="card-badge" aria-label={`${activity.completedBursts} unread`}>
           {activity.completedBursts > 99 ? '99+' : activity.completedBursts}
         </span>
       )}
       <button
-        className="shrink-0 w-11 text-text-muted text-lg border-l border-border grid place-items-center active:text-red active:bg-[rgba(248,81,73,0.08)]"
+        className="card-close"
         onClick={(e) => {
           e.stopPropagation()
           onRemove()

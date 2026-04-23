@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import clsx from 'clsx';
-import { Dialog, DialogContent } from '@neige/shared';
+import { Box, Dialog, Flex, Text, TextField } from '@radix-ui/themes';
 import type { RecentCommand } from '../hooks/useConfig';
 import type { ConvInfo } from '../types';
 
@@ -34,14 +33,22 @@ export function QuickLauncher({
 
   const lq = query.toLowerCase();
 
-  // Running/detached sessions
   const activeSessions = conversations
     .filter((c) => c.status !== 'dead')
-    .filter((c) => !lq || c.title.toLowerCase().includes(lq) || c.cwd.toLowerCase().includes(lq) || c.program.toLowerCase().includes(lq));
+    .filter(
+      (c) =>
+        !lq ||
+        c.title.toLowerCase().includes(lq) ||
+        c.cwd.toLowerCase().includes(lq) ||
+        c.program.toLowerCase().includes(lq),
+    );
 
-  // Recent commands (for launching new)
   const filteredRecent = recentCommands.filter(
-    (cmd) => !lq || cmd.program.toLowerCase().includes(lq) || cmd.cwd.toLowerCase().includes(lq) || (cmd.title && cmd.title.toLowerCase().includes(lq)),
+    (cmd) =>
+      !lq ||
+      cmd.program.toLowerCase().includes(lq) ||
+      cmd.cwd.toLowerCase().includes(lq) ||
+      (cmd.title && cmd.title.toLowerCase().includes(lq)),
   );
 
   interface DisplayItem {
@@ -62,7 +69,6 @@ export function QuickLauncher({
       detail: `${s.program} — ${s.cwd.replace(/^\/home\/[^/]+/, '~')}`,
     });
   }
-
   for (const cmd of filteredRecent) {
     items.push({
       type: 'recent',
@@ -92,11 +98,10 @@ export function QuickLauncher({
       e.preventDefault();
       handleSelect(items[selected]);
     }
-    // Escape handled by Radix Dialog via onOpenChange
   };
 
   useEffect(() => {
-    const el = document.querySelector('[data-launcher-selected="true"]');
+    const el = document.querySelector('[data-ql-selected="true"]');
     el?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
@@ -105,104 +110,148 @@ export function QuickLauncher({
   let globalIdx = 0;
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DialogContent
-        className="max-w-xl p-0"
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Dialog.Content
+        maxWidth="560px"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           inputRef.current?.focus();
         }}
       >
-      <div
-        className="flex flex-col w-full max-h-[420px] overflow-hidden"
-        onKeyDown={handleKeyDown}
-      >
-        <div className="flex items-center px-4 py-3 border-b border-border gap-2">
-          <span className="text-base flex-shrink-0 opacity-50">{'\u{26A1}'}</span>
-          <input
+        <div onKeyDown={handleKeyDown}>
+          <Dialog.Title>Quick Launcher</Dialog.Title>
+          <Dialog.Description size="1" color="gray" mb="3">
+            Switch sessions or launch a recent command.
+          </Dialog.Description>
+
+          <TextField.Root
             ref={inputRef}
+            size="3"
             value={query}
-            onChange={(e) => { setQuery(e.target.value); setSelected(0); }}
-            placeholder="Switch session or launch recent command..."
-            className="flex-1 bg-transparent border-none text-text-primary text-[15px] font-sans outline-none placeholder:text-text-faint"
-          />
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSelected(0);
+            }}
+            placeholder="Type to filter…"
+          >
+            <TextField.Slot>⚡</TextField.Slot>
+          </TextField.Root>
+
+          <Box mt="3" style={{ maxHeight: 360, overflowY: 'auto' }}>
+            {items.length === 0 && (
+              <Box py="5" style={{ textAlign: 'center' }}>
+                <Text size="2" color="gray">
+                  {query ? 'No matches' : 'No sessions or recent commands'}
+                </Text>
+              </Box>
+            )}
+
+            {hasSessions && <SectionLabel>Active sessions</SectionLabel>}
+            {items
+              .filter((i) => i.type === 'session')
+              .map((item) => {
+                const idx = globalIdx++;
+                const s = item.session!;
+                return (
+                  <Row
+                    key={`s:${s.id}`}
+                    selected={idx === selected}
+                    icon={<StatusDot status={s.status} />}
+                    title={item.label}
+                    detail={item.detail}
+                    onClick={() => handleSelect(item)}
+                    onHover={() => setSelected(idx)}
+                  />
+                );
+              })}
+
+            {hasRecent && <SectionLabel>Launch new</SectionLabel>}
+            {items
+              .filter((i) => i.type === 'recent')
+              .map((item, i) => {
+                const idx = globalIdx++;
+                return (
+                  <Row
+                    key={`r:${i}`}
+                    selected={idx === selected}
+                    icon="🚀"
+                    title={item.label}
+                    detail={item.detail}
+                    onClick={() => handleSelect(item)}
+                    onHover={() => setSelected(idx)}
+                  />
+                );
+              })}
+          </Box>
         </div>
-        <div className="flex-1 overflow-y-auto py-1">
-          {items.length === 0 && (
-            <div className="px-6 py-6 text-center text-text-faint text-sm">
-              {query ? 'No matches' : 'No sessions or recent commands'}
-            </div>
-          )}
-          {hasSessions && (
-            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
-              Active sessions
-            </div>
-          )}
-          {items.filter((i) => i.type === 'session').map((item) => {
-            const idx = globalIdx++;
-            const s = item.session!;
-            const isSelected = idx === selected;
-            return (
-              <button
-                key={`s:${s.id}`}
-                data-launcher-selected={isSelected ? 'true' : undefined}
-                className={clsx(
-                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
-                  isSelected && 'bg-blue-dim text-text-primary',
-                )}
-                onClick={() => handleSelect(item)}
-                onMouseEnter={() => setSelected(idx)}
-              >
-                <span
-                  className={clsx(
-                    'w-2 h-2 rounded-full flex-shrink-0',
-                    s.status === 'running' && 'bg-status-running shadow-[0_0_6px_rgba(63,185,80,0.5)]',
-                    s.status === 'detached' && 'bg-yellow shadow-[0_0_6px_rgba(210,153,34,0.5)]',
-                    s.status === 'dead' && 'bg-text-faint',
-                  )}
-                />
-                <span className="font-medium whitespace-nowrap">{item.label}</span>
-                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
-                  {item.detail}
-                </span>
-              </button>
-            );
-          })}
-          {hasRecent && (
-            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
-              Launch new
-            </div>
-          )}
-          {items.filter((i) => i.type === 'recent').map((item, i) => {
-            const idx = globalIdx++;
-            const isSelected = idx === selected;
-            return (
-              <button
-                key={`r:${i}`}
-                data-launcher-selected={isSelected ? 'true' : undefined}
-                className={clsx(
-                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
-                  isSelected && 'bg-blue-dim text-text-primary',
-                )}
-                onClick={() => handleSelect(item)}
-                onMouseEnter={() => setSelected(idx)}
-              >
-                <span className="text-sm flex-shrink-0">{'\u{1F680}'}</span>
-                <span className="font-medium whitespace-nowrap">{item.label}</span>
-                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
-                  {item.detail}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      </DialogContent>
-    </Dialog>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Text as="div" size="1" weight="medium" color="gray" mt="2" mb="1" style={{ paddingLeft: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      {children}
+    </Text>
+  );
+}
+
+function Row({
+  selected,
+  icon,
+  title,
+  detail,
+  onClick,
+  onHover,
+}: {
+  selected: boolean;
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  onClick: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <Flex
+      data-ql-selected={selected}
+      onClick={onClick}
+      onMouseEnter={onHover}
+      align="center"
+      gap="3"
+      px="3"
+      py="2"
+      style={{
+        cursor: 'pointer',
+        background: selected ? 'var(--accent-a3)' : 'transparent',
+        borderRadius: 'var(--radius-3)',
+      }}
+    >
+      <Box style={{ flex: '0 0 auto', width: 16, textAlign: 'center' }}>{icon}</Box>
+      <Box style={{ flex: 1, minWidth: 0 }}>
+        <Text as="div" size="2" weight="medium" truncate>
+          {title}
+        </Text>
+        <Text as="div" size="1" color="gray" truncate style={{ fontFamily: 'var(--code-font-family)' }}>
+          {detail}
+        </Text>
+      </Box>
+    </Flex>
+  );
+}
+
+function StatusDot({ status }: { status: ConvInfo['status'] }) {
+  const color =
+    status === 'running' ? 'var(--green-9)' : status === 'detached' ? 'var(--yellow-9)' : 'var(--gray-8)';
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        background: color,
+      }}
+    />
   );
 }

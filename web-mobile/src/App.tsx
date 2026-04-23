@@ -41,11 +41,7 @@ function App() {
   }
 
   if (authState === 'checking') {
-    return (
-      <div className="grid place-items-center h-full text-text-muted text-base">
-        loading…
-      </div>
-    )
+    return <div className="boot-screen">loading…</div>
   }
   if (authState === 'anonymous') {
     return <Login onAuthed={markAuthed} />
@@ -55,13 +51,10 @@ function App() {
   const menuConv = menuId ? byId.get(menuId) : null
 
   return (
-    <div className="relative h-full w-full">
+    <div className="app-root">
       {/* Pane host: always mounted so inactive card terminals stay live.
           visibility:hidden when overview is on top — keeps xterm dimensions. */}
-      <div
-        className="absolute inset-0 z-0 data-[visible=false]:invisible data-[visible=false]:pointer-events-none"
-        data-visible={stack.view === 'card'}
-      >
+      <div className="pane-host" data-visible={stack.view === 'card'}>
         {stack.cards.map((id) => {
           const conv = byId.get(id)
           if (!conv) return null

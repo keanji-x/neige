@@ -22,14 +22,9 @@ function TerminalComponent({ params }: IDockviewPanelProps<{ convId: string }>) 
   const { busy } = useTerminal(params.convId);
 
   return (
-    <div className="w-full h-full flex overflow-hidden min-h-0 relative">
-      <div
-        id={`terminal-${params.convId}`}
-        className="flex-1 px-2 py-1.5 rounded-[2px] overflow-hidden min-h-0 min-w-0 shadow-[inset_0_2px_8px_rgba(0,0,0,0.2)]"
-      />
-      {busy && (
-        <div className="absolute inset-0 bg-black/35 z-[5] pointer-events-none transition-opacity duration-300" />
-      )}
+    <div className="terminal-view">
+      <div id={`terminal-${params.convId}`} className="terminal-container" />
+      {busy && <div className="terminal-busy-overlay" />}
     </div>
   );
 }
@@ -138,7 +133,7 @@ export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: 
   );
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 relative overflow-hidden">
+    <div className="terminal-panel">
       <DockviewReact
         components={components}
         onReady={handleReady}

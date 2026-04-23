@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import clsx from 'clsx';
-import { Button, Dialog, DialogContent, Field, Input } from '@neige/shared';
+import {
+  Box,
+  Button,
+  Callout,
+  Card,
+  Checkbox,
+  Dialog,
+  Flex,
+  Select,
+  Text,
+  TextField,
+} from '@radix-ui/themes';
 import type { CreateConvRequest, DirEntry } from '../types';
 import { browseDir, isGitRepo } from '../api';
 import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
@@ -15,13 +25,6 @@ interface CreateDialogProps {
 
 const PROGRAMS = ['claude', 'bash', 'zsh', 'python3', 'node'];
 
-// Shared styling for the program-select element. Keeps the chevron SVG (set
-// via `.program-select` in App.css) while matching Input's look elsewhere.
-const SELECT_CLASS =
-  'program-select flex-1 h-9 px-3 pr-8 rounded-md border border-border bg-bg-primary ' +
-  'text-text-primary text-sm font-sans outline-none cursor-pointer transition-colors ' +
-  'focus:border-blue focus:shadow-[0_0_0_3px_rgba(56,139,253,0.15)]';
-
 export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }: CreateDialogProps) {
   const [title, setTitle] = useState('');
   const [program, setProgram] = useState('claude');
@@ -33,7 +36,6 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
   const [worktreeError, setWorktreeError] = useState('');
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [showBrowser, setShowBrowser] = useState(false);
-  // Autocomplete state
   const [suggestions, setSuggestions] = useState<DirEntry[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
@@ -67,7 +69,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       setShowSuggestions(false);
       setWorktreeError('');
     } catch {
-      // ignore — caller stays on current view
+      // ignore
     }
   }, []);
 
@@ -162,7 +164,6 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
         return;
       }
     }
-
     if (useWorktree && isClaudeProgram) {
       try {
         const ok = await isGitRepo(trimmedCwd);
@@ -173,7 +174,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
           return;
         }
       } catch {
-        // If the check fails, fall through and let backend handle it.
+        // fall through
       }
     }
 
@@ -199,9 +200,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
   const cwdSegments = cwd ? cwd.split('/').filter(Boolean) : [];
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent
-        className="max-w-md"
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Dialog.Content
+        maxWidth="480px"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           titleRef.current?.focus();
@@ -214,26 +215,24 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
         }}
       >
         <div onKeyDown={handleKeyDown}>
-          <h2 className="m-0 mb-5 text-xl font-semibold tracking-[-0.01em]">
-            New Conversation
-          </h2>
+          <Dialog.Title>New Conversation</Dialog.Title>
+          <Dialog.Description size="2" color="gray" mb="4">
+            Configure and launch a Claude Code session.
+          </Dialog.Description>
 
-          {/* Field-to-field spacing: 20 px (space-y-5). Inside Field, label→
-              input is 6 px. Section dividers (before Worktree group, before
-              footer) use their own larger gaps to create hierarchy. */}
-          <div className="space-y-5">
+          <Flex direction="column" gap="4">
             {(config.recentCommands?.length ?? 0) > 0 && (
-              <Field label="Recent">
-                <div className="flex flex-wrap gap-1.5">
+              <Box>
+                <Text as="div" size="1" weight="medium" color="gray" mb="2">
+                  RECENT
+                </Text>
+                <Flex wrap="wrap" gap="2">
                   {config.recentCommands!.map((cmd: RecentCommand, i: number) => (
-                    <button
+                    <Button
                       key={i}
-                      type="button"
-                      className={
-                        'flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border ' +
-                        'bg-bg-primary text-text-secondary text-xs font-sans cursor-pointer transition-colors max-w-full ' +
-                        'hover:bg-bg-hover hover:border-blue hover:text-text-primary'
-                      }
+                      size="1"
+                      variant="soft"
+                      color="gray"
                       onClick={() => {
                         setTitle(cmd.title || '');
                         setProgram(PROGRAMS.includes(cmd.program) ? cmd.program : '__custom__');
@@ -243,107 +242,127 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                         setWorktreeError('');
                       }}
                     >
-                      <span className="font-medium text-blue flex-shrink-0">{cmd.program}</span>
-                      <span className="font-mono text-text-faint whitespace-nowrap overflow-hidden text-ellipsis">
+                      <Text weight="medium">{cmd.program}</Text>
+                      <Text color="gray" style={{ fontFamily: 'var(--code-font-family)' }}>
                         {cmd.cwd ? cmd.cwd.replace(/^\/home\/[^/]+/, '~') : 'default'}
-                      </span>
-                    </button>
+                      </Text>
+                    </Button>
                   ))}
-                </div>
-              </Field>
+                </Flex>
+              </Box>
             )}
 
-            <Field label="Title">
-              <Input
+            <Box>
+              <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+                Title
+              </Text>
+              <TextField.Root
                 ref={titleRef}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder={cwd ? cwd.split('/').filter(Boolean).pop() || '' : 'Auto from directory name'}
+                placeholder={
+                  cwd
+                    ? cwd.split('/').filter(Boolean).pop() || ''
+                    : 'Auto from directory name'
+                }
               />
-            </Field>
+            </Box>
 
-            <Field label="Program">
-              <div className="flex gap-2">
-                <select
-                  className={SELECT_CLASS}
-                  value={PROGRAMS.includes(program) ? program : '__custom__'}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setProgram(val);
-                    if (val !== '__custom__') setCustomProgram('');
-                  }}
-                >
-                  {PROGRAMS.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                  <option value="__custom__">Custom...</option>
-                </select>
+            <Box>
+              <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+                Program
+              </Text>
+              <Flex gap="2">
+                <Box style={{ flex: 1 }}>
+                  <Select.Root
+                    value={PROGRAMS.includes(program) ? program : '__custom__'}
+                    onValueChange={(val) => {
+                      setProgram(val);
+                      if (val !== '__custom__') setCustomProgram('');
+                    }}
+                  >
+                    <Select.Trigger style={{ width: '100%' }} />
+                    <Select.Content>
+                      {PROGRAMS.map((p) => (
+                        <Select.Item key={p} value={p}>{p}</Select.Item>
+                      ))}
+                      <Select.Item value="__custom__">Custom...</Select.Item>
+                    </Select.Content>
+                  </Select.Root>
+                </Box>
                 {program === '__custom__' && (
-                  <Input
-                    className="flex-1 font-mono"
+                  <TextField.Root
+                    style={{ flex: 1, fontFamily: 'var(--code-font-family)' }}
                     value={customProgram}
                     onChange={(e) => setCustomProgram(e.target.value)}
                     placeholder="Enter program name"
                     autoFocus
                   />
                 )}
-              </div>
-            </Field>
+              </Flex>
+            </Box>
 
-            <Field label="Proxy" hint="optional">
-              <Input
+            <Box>
+              <Flex align="center" justify="between" mb="1">
+                <Text as="label" size="2" weight="medium">Proxy</Text>
+                <Text size="1" color="gray">optional</Text>
+              </Flex>
+              <TextField.Root
                 value={proxy}
                 onChange={(e) => setProxy(e.target.value)}
                 placeholder="e.g. http://127.0.0.1:7890"
               />
-            </Field>
+            </Box>
 
             {isClaudeProgram && (
-              <div className="space-y-3 rounded-md border border-border bg-bg-primary/40 p-3">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-blue cursor-pointer"
-                    checked={useWorktree}
-                    onChange={(e) => {
-                      setUseWorktree(e.target.checked);
-                      setWorktreeError('');
-                    }}
-                  />
-                  <span className="flex-1">
-                    <span className="block text-sm font-medium text-text-primary">
-                      Use git worktree
-                    </span>
-                    <span className="block text-xs text-text-muted mt-0.5">
-                      Each session gets its own branch
-                    </span>
-                  </span>
-                </label>
-                {useWorktree && (
-                  <Input
-                    className="font-mono"
-                    value={worktreeName}
-                    onChange={(e) => {
-                      setWorktreeName(e.target.value);
-                      setWorktreeError('');
-                    }}
-                    placeholder="Worktree name (optional, e.g. fix-login)"
-                  />
-                )}
-                {worktreeError && (
-                  <p className="text-xs text-red bg-red-dim px-2.5 py-1.5 border-l-2 border-red rounded-[2px]">
-                    {worktreeError}
-                  </p>
-                )}
-              </div>
+              <Card>
+                <Flex direction="column" gap="3">
+                  <Text as="label" size="2">
+                    <Flex gap="3" align="start">
+                      <Checkbox
+                        checked={useWorktree}
+                        onCheckedChange={(v) => {
+                          setUseWorktree(Boolean(v));
+                          setWorktreeError('');
+                        }}
+                      />
+                      <Box>
+                        <Text weight="medium" as="div">Use git worktree</Text>
+                        <Text size="1" color="gray" as="div">
+                          Each session gets its own branch
+                        </Text>
+                      </Box>
+                    </Flex>
+                  </Text>
+                  {useWorktree && (
+                    <TextField.Root
+                      style={{ fontFamily: 'var(--code-font-family)' }}
+                      value={worktreeName}
+                      onChange={(e) => {
+                        setWorktreeName(e.target.value);
+                        setWorktreeError('');
+                      }}
+                      placeholder="Worktree name (optional, e.g. fix-login)"
+                    />
+                  )}
+                  {worktreeError && (
+                    <Callout.Root color="red" size="1">
+                      <Callout.Text>{worktreeError}</Callout.Text>
+                    </Callout.Root>
+                  )}
+                </Flex>
+              </Card>
             )}
 
-            <Field label="Working Directory">
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  <Input
+            <Box>
+              <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+                Working Directory
+              </Text>
+              <Flex gap="2">
+                <Box style={{ flex: 1, position: 'relative' }}>
+                  <TextField.Root
                     ref={cwdInputRef}
-                    className="font-mono"
+                    style={{ fontFamily: 'var(--code-font-family)' }}
                     value={cwd}
                     onChange={(e) => handleCwdChange(e.target.value)}
                     onKeyDown={handleCwdKeyDown}
@@ -351,122 +370,143 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                     placeholder="Type to autocomplete, Tab to browse"
                   />
                   {showSuggestions && suggestions.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 bg-bg-primary border border-border-light border-t-0 rounded-b-md max-h-[200px] overflow-y-auto z-10 shadow-md">
+                    <Box
+                      style={{
+                        position: 'absolute',
+                        top: '100%',
+                        left: 0,
+                        right: 0,
+                        zIndex: 10,
+                        marginTop: 4,
+                        background: 'var(--color-panel-solid)',
+                        border: '1px solid var(--gray-a6)',
+                        borderRadius: 'var(--radius-3)',
+                        boxShadow: 'var(--shadow-4)',
+                        maxHeight: 200,
+                        overflowY: 'auto',
+                      }}
+                    >
                       {suggestions.map((s, i) => (
-                        <button
+                        <Box
                           key={s.name}
-                          type="button"
-                          className={clsx(
-                            'flex items-center gap-1.5 w-full px-3 py-1.5 bg-transparent border-b border-border last:border-b-0',
-                            'text-text-secondary text-sm font-mono cursor-pointer text-left transition-colors',
-                            'hover:bg-bg-hover hover:text-text-primary',
-                            i === selectedSuggestion && 'bg-blue-dim text-text-primary',
-                          )}
                           onMouseDown={(e) => {
                             e.preventDefault();
                             applySuggestion(s.name);
                           }}
+                          style={{
+                            padding: '6px 12px',
+                            fontFamily: 'var(--code-font-family)',
+                            fontSize: 'var(--font-size-2)',
+                            cursor: 'pointer',
+                            background: i === selectedSuggestion ? 'var(--accent-a3)' : 'transparent',
+                            color: 'var(--gray-12)',
+                          }}
                         >
-                          <span className="text-sm">&#128193;</span>
-                          {s.name}
-                        </button>
+                          📁 {s.name}
+                        </Box>
                       ))}
-                    </div>
+                    </Box>
                   )}
-                </div>
+                </Box>
                 <Button
-                  variant="default"
-                  size="md"
-                  onClick={() => browse(cwd || '~')}
                   type="button"
+                  variant="soft"
+                  color="gray"
+                  onClick={() => browse(cwd || '~')}
                 >
                   Browse
                 </Button>
-              </div>
-            </Field>
+              </Flex>
+            </Box>
 
             {showBrowser && (
-              <div className="-mt-2">
+              <Box>
                 {cwdSegments.length > 0 && (
-                  <div className="dir-breadcrumb flex flex-wrap items-center gap-0.5 mb-2 text-xs font-mono">
-                    <button
-                      type="button"
-                      className="bg-bg-tertiary border-none text-text-muted px-1.5 py-0.5 rounded cursor-pointer font-mono text-xs transition-colors hover:bg-bg-hover hover:text-blue"
-                      onClick={() => browse('/')}
-                    >
-                      /
-                    </button>
+                  <Flex wrap="wrap" align="center" gap="1" mb="2">
+                    <Button size="1" variant="soft" color="gray" onClick={() => browse('/')}>/</Button>
                     {cwdSegments.map((seg, i) => (
-                      <button
+                      <Button
                         key={i}
-                        type="button"
-                        className={clsx(
-                          'breadcrumb-seg bg-bg-tertiary border-none text-text-muted px-1.5 py-0.5 rounded cursor-pointer font-mono text-xs transition-colors hover:bg-bg-hover hover:text-blue',
-                          i === cwdSegments.length - 1 && 'text-text-primary font-medium',
-                        )}
+                        size="1"
+                        variant={i === cwdSegments.length - 1 ? 'soft' : 'ghost'}
+                        color="gray"
                         onClick={() => browse('/' + cwdSegments.slice(0, i + 1).join('/'))}
                       >
                         {seg}
-                      </button>
+                      </Button>
                     ))}
-                  </div>
+                  </Flex>
                 )}
-                <div className="bg-bg-primary border border-border rounded-md max-h-[180px] overflow-y-auto">
-                  <button
-                    type="button"
-                    className="block w-full px-3 py-1.5 bg-transparent border-b border-border text-text-muted text-sm font-mono cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary"
+                <Box
+                  style={{
+                    background: 'var(--color-panel-solid)',
+                    border: '1px solid var(--gray-a6)',
+                    borderRadius: 'var(--radius-3)',
+                    maxHeight: 180,
+                    overflowY: 'auto',
+                  }}
+                >
+                  <DirRow
+                    icon="↩"
+                    label=".."
                     onClick={() => {
                       const parent = cwd.replace(/\/[^/]+\/?$/, '') || '/';
                       browse(parent);
                     }}
-                  >
-                    <span className="mr-1.5">&#8617;</span>
-                    ..
-                  </button>
-                  {entries
-                    .filter((e) => e.is_dir)
-                    .map((entry) => (
-                      <button
-                        key={entry.name}
-                        type="button"
-                        className="block w-full px-3 py-1.5 bg-transparent border-b border-border last:border-b-0 text-text-secondary text-sm font-mono cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary"
-                        onClick={() => {
-                          const next = cwd.endsWith('/')
-                            ? `${cwd}${entry.name}`
-                            : `${cwd}/${entry.name}`;
-                          browse(next);
-                        }}
-                      >
-                        <span className="mr-1.5">&#128193;</span>
-                        {entry.name}
-                      </button>
-                    ))}
-                </div>
-              </div>
+                  />
+                  {entries.filter((e) => e.is_dir).map((entry) => (
+                    <DirRow
+                      key={entry.name}
+                      icon="📁"
+                      label={entry.name}
+                      onClick={() => {
+                        const next = cwd.endsWith('/')
+                          ? `${cwd}${entry.name}`
+                          : `${cwd}/${entry.name}`;
+                        browse(next);
+                      }}
+                    />
+                  ))}
+                </Box>
+              </Box>
             )}
-          </div>
+          </Flex>
 
-          {/* Footer: separated by 24 px (mt-6) + top border for visual break */}
-          <div className="flex gap-2 items-center justify-end mt-6 pt-4 border-t border-border">
-            <div className="mr-auto text-xs text-text-faint flex items-center gap-1">
-              <kbd className="inline-block px-1.5 py-px bg-bg-tertiary border border-border rounded text-[11px] font-mono text-text-muted">
-                ⌘
-              </kbd>
-              +
-              <kbd className="inline-block px-1.5 py-px bg-bg-tertiary border border-border rounded text-[11px] font-mono text-text-muted">
-                Enter
-              </kbd>
-              to create
-            </div>
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={handleSubmit}>
-              Create
-            </Button>
-          </div>
+          <Flex gap="3" mt="5" justify="end" align="center">
+            <Text size="1" color="gray" style={{ marginRight: 'auto' }}>
+              ⌘ + Enter to create
+            </Text>
+            <Dialog.Close>
+              <Button variant="soft" color="gray" onClick={onClose}>
+                Cancel
+              </Button>
+            </Dialog.Close>
+            <Button onClick={handleSubmit}>Create</Button>
+          </Flex>
         </div>
-      </DialogContent>
-    </Dialog>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function DirRow({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) {
+  return (
+    <Box
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '6px 12px',
+        fontFamily: 'var(--code-font-family)',
+        fontSize: 'var(--font-size-2)',
+        color: 'var(--gray-12)',
+        cursor: 'pointer',
+        borderBottom: '1px solid var(--gray-a3)',
+      }}
+    >
+      <span>{icon}</span>
+      <span>{label}</span>
+    </Box>
   );
 }

@@ -1,4 +1,4 @@
-import { Button, Dialog, DialogContent } from '@neige/shared';
+import { Button, Dialog, Flex } from '@radix-ui/themes';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -18,31 +18,30 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) onCancel();
-      }}
-    >
-      <DialogContent className="max-w-md">
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
+      <Dialog.Content maxWidth="420px">
         <div
-          className="w-[380px] max-w-full"
           onKeyDown={(e) => {
             if (e.key === 'Enter') onConfirm();
           }}
         >
-          <h2 className="m-0 mb-5 text-lg font-semibold tracking-[-0.01em]">{title}</h2>
-          <p className="text-base text-text-secondary m-0 mb-5 leading-[1.5]">{message}</p>
-          <div className="flex gap-2 items-center justify-end mt-3">
-            <Button variant="ghost" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={onConfirm} autoFocus>
+          <Dialog.Title>{title}</Dialog.Title>
+          <Dialog.Description size="2" color="gray" mb="4">
+            {message}
+          </Dialog.Description>
+
+          <Flex gap="3" justify="end">
+            <Dialog.Close>
+              <Button variant="soft" color="gray" onClick={onCancel}>
+                Cancel
+              </Button>
+            </Dialog.Close>
+            <Button color="red" onClick={onConfirm} autoFocus>
               {confirmLabel}
             </Button>
-          </div>
+          </Flex>
         </div>
-      </DialogContent>
-    </Dialog>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }

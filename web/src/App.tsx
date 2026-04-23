@@ -214,7 +214,7 @@ function App() {
   }, [conversations]);
 
   return (
-    <div className="flex h-screen bg-bg-primary text-text-primary overflow-hidden">
+    <div className="app">
       <Sidebar
         conversations={conversations}
         connected={connected}
@@ -232,7 +232,7 @@ function App() {
           updateConfig({ portForwards: ports });
         }}
       />
-      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+      <main className="main">
         <TerminalPanel
           dockviewApiRef={dockviewApiRef}
           onTabClose={handleTabClose}
@@ -256,9 +256,9 @@ function App() {
       />
       <Dialog open={showUrlInput} onOpenChange={setShowUrlInput}>
         <DialogContent className="max-w-xl p-0">
-          <div className="w-full">
+          <div className="url-input-dialog">
             <input
-              className="w-full px-[18px] py-3 bg-bg-secondary border border-border rounded-[10px] text-text-primary text-lg outline-none shadow-[0_8px_32px_rgba(0,0,0,0.4)] font-[inherit] focus:border-blue placeholder:text-text-secondary"
+              className="url-input-field"
               autoFocus
               placeholder="Enter URL (e.g. bilibili.com)"
               spellCheck={false}

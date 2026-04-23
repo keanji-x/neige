@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import clsx from 'clsx';
-import { Dialog, DialogContent } from '@neige/shared';
+import { Badge, Box, Dialog, Flex, Text, TextField } from '@radix-ui/themes';
 import { searchFiles, type FileSearchEntry } from '../api';
 import type { RecentFile } from '../hooks/useConfig';
 
@@ -8,10 +7,8 @@ type FileEntry = FileSearchEntry;
 
 interface DisplayItem {
   name: string;
-  /** For recent files: absolute path; for search results: relative path */
   path: string;
   isRecent: boolean;
-  /** Absolute path used when opening */
   fullPath: string;
 }
 
@@ -36,23 +33,25 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
       setQuery('');
       setSearchResults([]);
       setSelected(0);
-      // Focus is handled via DialogContent#onOpenAutoFocus below.
     }
   }, [open, searchRoot]);
 
-  const fetchFiles = useCallback(async (q: string) => {
-    if (!searchRoot) return;
-    setLoading(true);
-    try {
-      const data = await searchFiles(searchRoot, q || undefined);
-      setSearchResults(data);
-      setSelected(0);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [searchRoot]);
+  const fetchFiles = useCallback(
+    async (q: string) => {
+      if (!searchRoot) return;
+      setLoading(true);
+      try {
+        const data = await searchFiles(searchRoot, q || undefined);
+        setSearchResults(data);
+        setSelected(0);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    },
+    [searchRoot],
+  );
 
   const handleChange = (value: string) => {
     setQuery(value);
@@ -65,43 +64,26 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
     }
   };
 
-  // Build display list: recent files first (filtered by query), then search results
   const buildDisplayList = (): DisplayItem[] => {
     const items: DisplayItem[] = [];
     const lq = query.toLowerCase();
     const seenPaths = new Set<string>();
 
-    // Recent files (always shown at top, filtered by query).
-    // Prioritize entries under the active session's cwd so the picker stays
-    // scoped to "stuff I opened from this project" even when the global
-    // recent list spans multiple repos.
-    const filteredRecent = recentFiles.filter((f) =>
-      !lq || f.name.toLowerCase().includes(lq) || f.path.toLowerCase().includes(lq)
+    const filteredRecent = recentFiles.filter(
+      (f) => !lq || f.name.toLowerCase().includes(lq) || f.path.toLowerCase().includes(lq),
     );
     const isUnderRoot = (p: string) =>
       !!searchRoot && (p === searchRoot || p.startsWith(searchRoot + '/'));
-    // Array.sort is stable (ES2019+), so recency order is preserved within each group.
     filteredRecent.sort((a, b) => Number(isUnderRoot(b.path)) - Number(isUnderRoot(a.path)));
     for (const f of filteredRecent) {
       seenPaths.add(f.path);
-      items.push({
-        name: f.name,
-        path: f.path,
-        isRecent: true,
-        fullPath: f.path,
-      });
+      items.push({ name: f.name, path: f.path, isRecent: true, fullPath: f.path });
     }
 
-    // Search results (deduplicated against recent files)
     for (const f of searchResults) {
       const fullPath = `${searchRoot}/${f.path}`;
       if (seenPaths.has(fullPath)) continue;
-      items.push({
-        name: f.name,
-        path: f.path,
-        isRecent: false,
-        fullPath,
-      });
+      items.push({ name: f.name, path: f.path, isRecent: false, fullPath });
     }
 
     return items;
@@ -125,128 +107,180 @@ export function FilePicker({ open, onClose, onOpenFile, searchRoot, recentFiles 
       e.preventDefault();
       handleSelect(displayList[selected]);
     }
-    // Escape handled by Radix Dialog via onOpenChange
   };
 
-  // Scroll selected item into view
   useEffect(() => {
-    const el = document.querySelector('[data-picker-selected="true"]');
+    const el = document.querySelector('[data-fp-selected="true"]');
     el?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
   const extIcon = (name: string) => {
     const ext = name.split('.').pop()?.toLowerCase() || '';
-    if (['md', 'markdown'].includes(ext)) return '\u{1F4DD}';
-    if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) return '\u{1F7E8}';
-    if (['rs'].includes(ext)) return '\u{1F9E1}';
-    if (['py'].includes(ext)) return '\u{1F40D}';
-    if (['json', 'toml', 'yaml', 'yml'].includes(ext)) return '\u{2699}';
-    if (['css', 'html'].includes(ext)) return '\u{1F3A8}';
-    return '\u{1F4C4}';
+    if (['md', 'markdown'].includes(ext)) return '📝';
+    if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) return '🟨';
+    if (['rs'].includes(ext)) return '🧡';
+    if (['py'].includes(ext)) return '🐍';
+    if (['json', 'toml', 'yaml', 'yml'].includes(ext)) return '⚙';
+    if (['css', 'html'].includes(ext)) return '🎨';
+    return '📄';
   };
 
-  // Check if we have recent items in the display to show a section header
   const hasRecent = displayList.some((d) => d.isRecent);
   const hasSearch = displayList.some((d) => !d.isRecent);
   let globalIdx = 0;
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DialogContent
-        className="max-w-xl p-0"
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Dialog.Content
+        maxWidth="560px"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           inputRef.current?.focus();
         }}
       >
-      <div
-        className="flex flex-col w-full max-h-[420px] overflow-hidden"
-        onKeyDown={handleKeyDown}
-      >
-        <div className="flex items-center px-4 py-3 border-b border-border gap-2">
-          <span className="text-base flex-shrink-0 opacity-50">{'\u{1F50D}'}</span>
-          <input
+        <div onKeyDown={handleKeyDown}>
+          <Dialog.Title>Open File</Dialog.Title>
+          <Dialog.Description size="1" color="gray" mb="3">
+            Recent files and fuzzy search inside the active session's cwd.
+          </Dialog.Description>
+
+          <TextField.Root
             ref={inputRef}
+            size="3"
             value={query}
             onChange={(e) => handleChange(e.target.value)}
-            placeholder="Search files by name..."
-            className="flex-1 bg-transparent border-none text-text-primary text-[15px] font-sans outline-none placeholder:text-text-faint"
-          />
-          {loading && (
-            <span className="w-[14px] h-[14px] border-2 border-border border-t-blue rounded-full animate-spin" />
-          )}
+            placeholder="Search files by name…"
+          >
+            <TextField.Slot>🔍</TextField.Slot>
+            {loading && <TextField.Slot side="right"><Spinner /></TextField.Slot>}
+          </TextField.Root>
+
+          <Box mt="3" style={{ maxHeight: 360, overflowY: 'auto' }}>
+            {displayList.length === 0 && !loading && (
+              <Box py="5" style={{ textAlign: 'center' }}>
+                <Text size="2" color="gray">
+                  {query ? 'No files found' : 'No recent files. Type to search…'}
+                </Text>
+              </Box>
+            )}
+
+            {hasRecent && <SectionLabel>Recent files</SectionLabel>}
+            {displayList
+              .filter((d) => d.isRecent)
+              .map((item) => {
+                const idx = globalIdx++;
+                return (
+                  <Row
+                    key={`recent:${item.fullPath}`}
+                    selected={idx === selected}
+                    icon={extIcon(item.name)}
+                    title={item.name}
+                    detail={item.path.replace(/^\/home\/[^/]+/, '~')}
+                    badge="recent"
+                    onClick={() => handleSelect(item)}
+                    onHover={() => setSelected(idx)}
+                  />
+                );
+              })}
+
+            {hasRecent && hasSearch && <SectionLabel>Files</SectionLabel>}
+            {displayList
+              .filter((d) => !d.isRecent)
+              .map((item) => {
+                const idx = globalIdx++;
+                return (
+                  <Row
+                    key={`search:${item.path}`}
+                    selected={idx === selected}
+                    icon={extIcon(item.name)}
+                    title={item.name}
+                    detail={item.path}
+                    onClick={() => handleSelect(item)}
+                    onHover={() => setSelected(idx)}
+                  />
+                );
+              })}
+          </Box>
         </div>
-        <div className="flex-1 overflow-y-auto py-1">
-          {displayList.length === 0 && !loading && (
-            <div className="px-6 py-6 text-center text-text-faint text-sm">
-              {query ? 'No files found' : 'No recent files. Type to search...'}
-            </div>
-          )}
-          {hasRecent && (
-            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
-              Recent files
-            </div>
-          )}
-          {displayList.filter((d) => d.isRecent).map((item) => {
-            const idx = globalIdx++;
-            const isSelected = idx === selected;
-            return (
-              <button
-                key={`recent:${item.fullPath}`}
-                data-picker-selected={isSelected ? 'true' : undefined}
-                className={clsx(
-                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
-                  isSelected && 'bg-blue-dim text-text-primary',
-                )}
-                onClick={() => handleSelect(item)}
-                onMouseEnter={() => setSelected(idx)}
-              >
-                <span className="text-sm flex-shrink-0">{extIcon(item.name)}</span>
-                <span className="font-medium whitespace-nowrap">{item.name}</span>
-                <span className="text-[9px] text-blue bg-blue-dim px-1.5 py-px rounded-[3px] flex-shrink-0 uppercase tracking-[0.04em]">
-                  recent
-                </span>
-                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
-                  {item.path.replace(/^\/home\/[^/]+/, '~')}
-                </span>
-              </button>
-            );
-          })}
-          {hasRecent && hasSearch && (
-            <div className="px-4 pt-1.5 pb-0.5 text-[10px] font-semibold text-text-faint uppercase tracking-[0.06em] select-none">
-              Files
-            </div>
-          )}
-          {displayList.filter((d) => !d.isRecent).map((item) => {
-            const idx = globalIdx++;
-            const isSelected = idx === selected;
-            return (
-              <button
-                key={`search:${item.path}`}
-                data-picker-selected={isSelected ? 'true' : undefined}
-                className={clsx(
-                  'flex items-center gap-2 w-full px-4 py-2 bg-transparent border-none text-text-secondary text-sm font-sans cursor-pointer text-left transition-colors hover:bg-bg-hover hover:text-text-primary',
-                  isSelected && 'bg-blue-dim text-text-primary',
-                )}
-                onClick={() => handleSelect(item)}
-                onMouseEnter={() => setSelected(idx)}
-              >
-                <span className="text-sm flex-shrink-0">{extIcon(item.name)}</span>
-                <span className="font-medium whitespace-nowrap">{item.name}</span>
-                <span className="font-mono text-xs text-text-faint ml-auto whitespace-nowrap overflow-hidden text-ellipsis max-w-[280px] text-right">
-                  {item.path}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      </DialogContent>
-    </Dialog>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Text
+      as="div"
+      size="1"
+      weight="medium"
+      color="gray"
+      mt="2"
+      mb="1"
+      style={{ paddingLeft: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}
+    >
+      {children}
+    </Text>
+  );
+}
+
+function Row({
+  selected,
+  icon,
+  title,
+  detail,
+  badge,
+  onClick,
+  onHover,
+}: {
+  selected: boolean;
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  badge?: string;
+  onClick: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <Flex
+      data-fp-selected={selected}
+      onClick={onClick}
+      onMouseEnter={onHover}
+      align="center"
+      gap="3"
+      px="3"
+      py="2"
+      style={{
+        cursor: 'pointer',
+        background: selected ? 'var(--accent-a3)' : 'transparent',
+        borderRadius: 'var(--radius-3)',
+      }}
+    >
+      <Box style={{ flex: '0 0 auto', width: 20, textAlign: 'center' }}>{icon}</Box>
+      <Box style={{ flex: 1, minWidth: 0 }}>
+        <Flex align="center" gap="2">
+          <Text size="2" weight="medium" truncate>{title}</Text>
+          {badge && <Badge size="1" color="gray" variant="soft">{badge}</Badge>}
+        </Flex>
+        <Text as="div" size="1" color="gray" truncate style={{ fontFamily: 'var(--code-font-family)' }}>
+          {detail}
+        </Text>
+      </Box>
+    </Flex>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        width: 14,
+        height: 14,
+        border: '2px solid var(--gray-a4)',
+        borderTopColor: 'var(--accent-9)',
+        borderRadius: '50%',
+        animation: 'spin 0.7s linear infinite',
+      }}
+    />
   );
 }
