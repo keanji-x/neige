@@ -211,13 +211,13 @@ export function Sidebar({
             </span>
             {c.worktree_branch && (
               <span
-                className="text-[10px] font-mono text-blue whitespace-nowrap overflow-hidden text-ellipsis max-w-[80px]"
+                className="text-xs font-mono text-blue whitespace-nowrap overflow-hidden text-ellipsis max-w-[80px]"
                 title={c.worktree_branch}
               >
                 &#9741; {c.worktree_branch.replace('neige/', '')}
               </span>
             )}
-            <span className="text-[10px] text-text-faint whitespace-nowrap flex-shrink-0">
+            <span className="text-xs text-text-faint whitespace-nowrap flex-shrink-0">
               {timeAgo(c.created_at)}
             </span>
           </span>
