@@ -147,6 +147,58 @@ fn rotate_token(path: &std::path::Path) -> std::io::Result<String> {
     Ok(token)
 }
 
+/// Shell out to `tailscale status --json` and synthesize origin URLs for this
+/// node's Tailscale identities (IPs, MagicDNS FQDN, short hostname), each with
+/// and without `:<port>`. Silent no-op if tailscale is missing or slow.
+async fn detect_tailscale_origins(port: u16) -> Vec<String> {
+    let output_res = tokio::time::timeout(
+        std::time::Duration::from_millis(800),
+        tokio::process::Command::new("tailscale")
+            .args(["status", "--json"])
+            .output(),
+    )
+    .await;
+
+    let output = match output_res {
+        Ok(Ok(o)) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut hosts: Vec<String> = Vec::new();
+    if let Some(ips) = json.pointer("/Self/TailscaleIPs").and_then(|v| v.as_array()) {
+        for ip in ips.iter().filter_map(|v| v.as_str()) {
+            hosts.push(if ip.contains(':') {
+                format!("[{ip}]")
+            } else {
+                ip.to_string()
+            });
+        }
+    }
+    if let Some(dns) = json.pointer("/Self/DNSName").and_then(|v| v.as_str()) {
+        let fqdn = dns.trim_end_matches('.');
+        if !fqdn.is_empty() {
+            hosts.push(fqdn.to_string());
+        }
+    }
+    if let Some(short) = json.pointer("/Self/HostName").and_then(|v| v.as_str()) {
+        if !short.is_empty() {
+            hosts.push(short.to_string());
+        }
+    }
+
+    let mut origins = Vec::with_capacity(hosts.len() * 2);
+    for h in hosts {
+        origins.push(format!("http://{h}"));
+        origins.push(format!("http://{h}:{port}"));
+    }
+    origins
+}
+
 fn print_login_url(bind: &str, token: &str) {
     println!();
     println!("Open this URL in your browser to sign in:");
@@ -225,13 +277,23 @@ async fn main() {
         .to_string_lossy()
         .to_string();
 
+    // Merge CLI-supplied origins with any we can auto-detect from the local
+    // Tailscale daemon. Users on tailnets otherwise hit a 403 on any non-
+    // loopback access.
+    let mut allowed_origins = cli.allowed_origins.clone();
+    let ts_origins = detect_tailscale_origins(cli.port).await;
+    if !ts_origins.is_empty() {
+        eprintln!("Detected Tailscale origins: {}", ts_origins.join(", "));
+        allowed_origins.extend(ts_origins);
+    }
+
     // Initialize auth state
     let auth_cfg = if cli.no_auth {
         auth::AuthConfig {
             sessions: Arc::new(auth::SessionStore::new()),
             rate_limiter: Arc::new(auth::LoginRateLimiter::new()),
             token_hash: None,
-            allowed_origins: cli.allowed_origins.clone(),
+            allowed_origins: allowed_origins.clone(),
         }
     } else {
         let path = auth_file_path_from(cli.auth_file.as_deref());
@@ -270,7 +332,7 @@ async fn main() {
             sessions: Arc::new(auth::SessionStore::new()),
             rate_limiter: Arc::new(auth::LoginRateLimiter::new()),
             token_hash: Some(hash),
-            allowed_origins: cli.allowed_origins.clone(),
+            allowed_origins,
         }
     };
 

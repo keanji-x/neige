@@ -71,6 +71,20 @@ cargo run -- --listen 0.0.0.0
 
 For multi-user remote hosts, prefer `neige-connect` over `--listen 0.0.0.0`. Note that TCP loopback is *not* a per-user boundary on shared Linux hosts — other local users can reach `127.0.0.1:3030` too, and only the token stops them.
 
+### Allowed origins
+
+State-changing requests (login, API calls, WebSocket upgrades) are rejected unless their `Origin` header is on an allowlist. Loopback (`localhost`, `127.0.0.1`, `::1`) is always allowed.
+
+If you reach the server via any other hostname — LAN IP, a reverse proxy, a Tailscale MagicDNS name — add it with `--allowed-origin`:
+
+```bash
+cargo run -- --listen 0.0.0.0 --allowed-origin http://pivot.tail328551.ts.net --allowed-origin http://192.168.1.10
+```
+
+If not listed, the browser login will fail with `403 origin missing and referer not trusted` — even when the token is correct.
+
+**Tailscale is auto-detected.** On startup neige runs `tailscale status --json` and adds the node's Tailscale IPs, MagicDNS FQDN, and short hostname to the allowlist (with and without `:<port>`). If `tailscale` isn't installed or returns nothing, this is silently skipped.
+
 ### CLI flags
 
 | Flag | Default | Purpose |
