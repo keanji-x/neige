@@ -6,8 +6,9 @@
 //! the WS handler's reconnect/replay protocol (seq=0 snapshot, delta replay)
 //! keeps working on top of the same `AttachResult`.
 
+pub mod daemon;
+
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -82,7 +83,7 @@ impl History {
     }
 }
 
-/// Result of `PtySession::attach` — tells the WS handler how to prime a new
+/// Result of `SessionClient::attach` — tells the WS handler how to prime a new
 /// connection before it starts forwarding the live broadcast.
 pub enum AttachResult {
     UpToDate {
@@ -98,27 +99,8 @@ pub enum AttachResult {
     },
 }
 
-/// Writer handed to WS inbound code. Internally queues every `write_all`
-/// as a `ClientMsg::Stdin` frame on the daemon socket. We expose the old
-/// `Write + Send` shape so call sites don't have to change.
-struct FramedWriter {
-    tx: mpsc::UnboundedSender<ClientMsg>,
-}
-
-impl Write for FramedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.tx
-            .send(ClientMsg::Stdin(buf.to_vec()))
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "daemon gone"))?;
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// A session backed by a `neige-session-daemon` over a Unix socket.
-pub struct PtySession {
+pub struct SessionClient {
     /// Control channel to the daemon (Stdin / Resize / Kill frames). Writes
     /// happen on a tokio task that owns the socket's write half.
     ctrl_tx: mpsc::UnboundedSender<ClientMsg>,
@@ -133,12 +115,12 @@ pub struct PtySession {
     sock_path: PathBuf,
 }
 
-impl PtySession {
+impl SessionClient {
     /// Connect to the daemon for `id` and send the initial Attach. Spawns
     /// tasks that keep the socket plumbed: reader (socket → history +
     /// broadcast), writer (mpsc → socket), both tied to `alive`.
     pub async fn connect(id: &Uuid, cols: u16, rows: u16) -> Result<Self, String> {
-        let sock_path = crate::session::sock_path(id);
+        let sock_path = daemon::sock_path(id);
         let stream = UnixStream::connect(&sock_path)
             .await
             .map_err(|e| format!("connect daemon socket {sock_path:?}: {e}"))?;
@@ -224,13 +206,10 @@ impl PtySession {
         })
     }
 
-    /// Return a cloneable, `Write`-implementing handle the WS inbound path
-    /// can drop bytes into. Writes become ClientMsg::Stdin frames.
-    pub fn writer_handle(&self) -> Arc<Mutex<Box<dyn Write + Send>>> {
-        let writer: Box<dyn Write + Send> = Box::new(FramedWriter {
-            tx: self.ctrl_tx.clone(),
-        });
-        Arc::new(Mutex::new(writer))
+    /// Clone of the control-channel sender. Callers push `ClientMsg::Stdin`
+    /// frames through it to feed the daemon's PTY.
+    pub fn stdin_sender(&self) -> mpsc::UnboundedSender<ClientMsg> {
+        self.ctrl_tx.clone()
     }
 
     /// Forward a resize to the daemon (last-wins at the daemon side).
@@ -277,6 +256,6 @@ impl PtySession {
 }
 
 // No explicit Drop — we deliberately do NOT kill the daemon when the
-// PtySession is dropped. Daemons must survive neige-server restarts; the
-// explicit lifecycle is `session::kill_session` called from the conversation
+// SessionClient is dropped. Daemons must survive neige-server restarts; the
+// explicit lifecycle is `daemon::kill_session` called from the conversation
 // manager's `remove()`.
