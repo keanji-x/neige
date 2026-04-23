@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CreateConvRequest, DirEntry } from '../types';
+import { browseDir, isGitRepo } from '../api';
 import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
 
 interface CreateDialogProps {
@@ -50,14 +51,15 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
   }, [open, config.proxy]);
 
   const browse = useCallback(async (path: string) => {
-    const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await browseDir(path);
       setCwd(data.path);
       setEntries(data.entries);
       setShowBrowser(true);
       setShowSuggestions(false);
       setWorktreeError('');
+    } catch {
+      // ignore — caller stays on current view
     }
   }, []);
 
@@ -81,16 +83,13 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     }
 
     try {
-      const res = await fetch(`/api/browse?path=${encodeURIComponent(parentPath)}`);
-      if (res.ok) {
-        const data = await res.json();
-        const filtered = (data.entries as DirEntry[])
-          .filter((e) => e.is_dir && e.name.toLowerCase().startsWith(prefix))
-          .slice(0, 8);
-        setSuggestions(filtered);
-        setShowSuggestions(filtered.length > 0);
-        setSelectedSuggestion(-1);
-      }
+      const data = await browseDir(parentPath);
+      const filtered = data.entries
+        .filter((e) => e.is_dir && e.name.toLowerCase().startsWith(prefix))
+        .slice(0, 8);
+      setSuggestions(filtered);
+      setShowSuggestions(filtered.length > 0);
+      setSelectedSuggestion(-1);
     } catch {
       // ignore
     }
@@ -167,17 +166,12 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
 
     if (useWorktree && isClaudeProgram) {
       try {
-        const res = await fetch(
-          `/api/is-git-repo?path=${encodeURIComponent(trimmedCwd)}`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          if (!data.is_git_repo) {
-            setWorktreeError(
-              'This directory is not in a git repo — worktree is unavailable. Uncheck the box or choose a git directory.'
-            );
-            return;
-          }
+        const ok = await isGitRepo(trimmedCwd);
+        if (!ok) {
+          setWorktreeError(
+            'This directory is not in a git repo — worktree is unavailable. Uncheck the box or choose a git directory.'
+          );
+          return;
         }
       } catch {
         // If the check fails, fall through and let backend handle it.

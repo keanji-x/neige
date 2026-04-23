@@ -1,100 +1,57 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { ConvInfo, CreateConvRequest } from '../types';
+import { useCallback } from 'react';
+import {
+  createConversation,
+  deleteConversation,
+  renameConversation,
+  resumeConversation,
+  useConversationsPoll,
+  type ConvInfo,
+  type CreateConvRequest,
+} from '@neige/shared';
 
-const API = '';
-
+/**
+ * Desktop wrapper around the shared polling hook. Adds the CRUD callbacks
+ * that App.tsx expects; each refreshes the list after it resolves so the
+ * sidebar reflects the change immediately without waiting for the next poll.
+ */
 export function useConversations() {
-  const [conversations, setConversations] = useState<ConvInfo[]>([]);
-  const [connected, setConnected] = useState(true);
+  const { conversations, connected, refresh } = useConversationsPoll({
+    intervalMs: 3000,
+  });
 
-  const refresh = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/conversations`);
-      if (res.ok) {
-        setConversations(await res.json());
-        setConnected(true);
-      } else {
-        setConnected(false);
-      }
-    } catch {
-      setConnected(false);
-    }
-  }, []);
+  const create = useCallback(
+    async (req: CreateConvRequest): Promise<ConvInfo> => {
+      const conv = await createConversation(req);
+      await refresh();
+      return conv;
+    },
+    [refresh],
+  );
 
-  const create = useCallback(async (req: CreateConvRequest) => {
-    const res = await fetch(`${API}/api/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const conv: ConvInfo = await res.json();
-    await refresh();
-    return conv;
-  }, [refresh]);
+  const resume = useCallback(
+    async (id: string): Promise<ConvInfo> => {
+      const conv = await resumeConversation(id);
+      await refresh();
+      return conv;
+    },
+    [refresh],
+  );
 
-  const resume = useCallback(async (id: string) => {
-    const res = await fetch(`${API}/api/conversations/${id}/resume`, {
-      method: 'POST',
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const conv: ConvInfo = await res.json();
-    await refresh();
-    return conv;
-  }, [refresh]);
+  const rename = useCallback(
+    async (id: string, title: string) => {
+      await renameConversation(id, title);
+      await refresh();
+    },
+    [refresh],
+  );
 
-  const rename = useCallback(async (id: string, title: string) => {
-    await fetch(`${API}/api/conversations/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
-    await refresh();
-  }, [refresh]);
-
-  const remove = useCallback(async (id: string) => {
-    await fetch(`${API}/api/conversations/${id}`, { method: 'DELETE' });
-    await refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    let failCount = 0;
-    const BASE_INTERVAL = 3000;
-    const MAX_INTERVAL = 30000;
-
-    const poll = async () => {
-      try {
-        const res = await fetch(`${API}/api/conversations`, { signal: controller.signal });
-        if (res.ok) {
-          setConversations(await res.json());
-          setConnected(true);
-          failCount = 0;
-        } else {
-          setConnected(false);
-          failCount++;
-        }
-      } catch {
-        if (!controller.signal.aborted) {
-          setConnected(false);
-          failCount++;
-        }
-      }
-      if (!controller.signal.aborted) {
-        const delay = failCount > 0
-          ? Math.min(BASE_INTERVAL * Math.pow(1.5, failCount), MAX_INTERVAL)
-          : BASE_INTERVAL;
-        timer = setTimeout(poll, delay);
-      }
-    };
-
-    poll();
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, []);
+  const remove = useCallback(
+    async (id: string) => {
+      await deleteConversation(id);
+      await refresh();
+    },
+    [refresh],
+  );
 
   return { conversations, connected, create, resume, rename, remove, refresh };
 }

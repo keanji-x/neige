@@ -15,17 +15,21 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
-    /* Paths */
-    "paths": {
-      "@neige/shared": ["../packages/neige-web-shared/src/index.ts"],
-      "@neige/shared/*": ["../packages/neige-web-shared/src/*"]
-    },
-
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Shared package alias. baseUrl is legal in TS6 (deprecated in 7); we
+       keep it + ignoreDeprecations so the shared dir — which lives outside
+       the Vite root — still gets tsc path resolution. */
+    "baseUrl": ".",
+    "paths": {
+      "@neige/shared": ["../packages/neige-web-shared/src/index.ts"],
+      "@neige/shared/*": ["../packages/neige-web-shared/src/*"]
+    },
+    "ignoreDeprecations": "6.0"
   },
-  "include": ["src", "../packages/neige-web-shared/src"]
+  "include": ["src", "../packages/neige-web-shared/src/**/*.{ts,tsx}"]
 }

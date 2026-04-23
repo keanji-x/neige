@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "prelink:shared": "mkdir -p ../packages/neige-web-shared && ln -sfn ../../web/node_modules ../packages/neige-web-shared/node_modules",
+    "prelink:shared": "node -e \"try { require('fs').symlinkSync('../../web/node_modules', '../packages/neige-web-shared/node_modules', 'dir'); } catch (e) { if (e.code !== 'EEXIST') throw e; }\"",
+    "dev": "npm run prelink:shared && vite",
     "build": "npm run prelink:shared && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

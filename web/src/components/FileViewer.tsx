@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { marked } from 'marked';
+import { authedFetch, fileUrl as buildFileUrl } from '../api';
 
 interface FileViewerProps {
   filePath: string;
@@ -24,7 +25,7 @@ function normalizeEtag(raw: string | null): string | null {
 export function FileViewer({ filePath }: FileViewerProps) {
   const ext = extOf(filePath);
   const isImage = IMAGE_EXTS.has(ext);
-  const fileUrl = `/api/file?path=${encodeURIComponent(filePath)}`;
+  const fileUrl = buildFileUrl(filePath);
 
   const [content, setContent] = useState('');
   const [language, setLanguage] = useState('text');
@@ -39,7 +40,7 @@ export function FileViewer({ filePath }: FileViewerProps) {
     setLoading(true);
     setError('');
     try {
-      const r = await fetch(fileUrl);
+      const r = await authedFetch(fileUrl);
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       setEtag(r.headers.get('etag'));
       const data = (await r.json()) as { content: string; language: string };
@@ -56,7 +57,7 @@ export function FileViewer({ filePath }: FileViewerProps) {
   // ETag and hide real file changes from the diff check.
   const fetchEtag = useCallback(async (): Promise<string | null> => {
     try {
-      const r = await fetch(fileUrl, { method: 'HEAD', cache: 'no-store' });
+      const r = await authedFetch(fileUrl, { method: 'HEAD', cache: 'no-store' });
       if (r.ok) return r.headers.get('etag');
     } catch { /* ignore */ }
     return null;
