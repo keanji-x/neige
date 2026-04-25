@@ -3,7 +3,6 @@
 
 import { useState } from 'react';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
-import { ToolResultBlock } from '../components/ToolResultBlock';
 import { DefaultToolCard } from './DefaultToolCard';
 import type { ToolRendererProps } from './registry';
 
@@ -63,10 +62,6 @@ export function AskUserQuestionCard(props: ToolRendererProps) {
   const [submitted, setSubmitted] = useState(false);
   const [sentNote, setSentNote] = useState<string | null>(null);
 
-  if (result) {
-    return <ToolResultBlock content={result.content} isError={result.isError} />;
-  }
-
   if (isStreaming) {
     return (
       <Text size="1" color="gray" style={{ fontStyle: 'italic' }}>
@@ -77,6 +72,11 @@ export function AskUserQuestionCard(props: ToolRendererProps) {
 
   const questions = parseQuestions(input);
   if (!questions) return <DefaultToolCard {...props} />;
+
+  // claude --print auto-fails AskUserQuestion (no interactive surface in the
+  // CLI tool harness), so a result is almost always present and almost always
+  // an error. Show it inline but keep the buttons live — clicking still sends
+  // a user_message that claude can act on next turn.
 
   const anyMulti = questions.some((q) => q.multiSelect);
 
@@ -116,6 +116,21 @@ export function AskUserQuestionCard(props: ToolRendererProps) {
 
   return (
     <Flex direction="column" gap="3">
+      {result && result.isError && (
+        <Box
+          px="2"
+          py="1"
+          style={{
+            borderRadius: 'var(--radius-2)',
+            background: 'var(--gray-a3)',
+            border: '1px solid var(--gray-a4)',
+          }}
+        >
+          <Text size="1" color="gray">
+            CLI auto-rejected the prompt — pick an option below to answer manually.
+          </Text>
+        </Box>
+      )}
       {questions.map((q, qi) => {
         const chosen = singlePicks[qi];
         const multiSet = multiPicks[qi] ?? new Set<string>();
