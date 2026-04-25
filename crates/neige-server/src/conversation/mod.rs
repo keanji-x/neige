@@ -707,4 +707,30 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--resume"));
         assert!(!argv.iter().any(|a| a == "--session-id"));
     }
+
+    #[test]
+    fn build_chat_argv_includes_verbose() {
+        // Claude CLI rejects `--print --output-format=stream-json` without
+        // `--verbose`. Locking this assertion so a future refactor can't
+        // strip it again — that bug had the daemon spawn claude, claude
+        // exit code 1 instantly, the socket vanish, and the user's chat
+        // turns silently dropped.
+        for resume in [false, true] {
+            let argv = build_chat_argv("claude", &Uuid::nil(), resume);
+            assert!(
+                argv.iter().any(|a| a == "--verbose"),
+                "build_chat_argv must include --verbose (resume={resume}): got {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_chat_argv_includes_partial_messages_and_hook_events() {
+        // Mode B's value prop depends on partial-message deltas (live token
+        // streaming) and hook events (permission-prompt observability). Lock
+        // both flags.
+        let argv = build_chat_argv("claude", &Uuid::nil(), false);
+        assert!(argv.iter().any(|a| a == "--include-partial-messages"));
+        assert!(argv.iter().any(|a| a == "--include-hook-events"));
+    }
 }

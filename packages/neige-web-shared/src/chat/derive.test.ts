@@ -190,6 +190,105 @@ describe('deriveTimeline', () => {
     expect(block.isStreaming).toBe(false);
   });
 
+  it('renders a user_message event as a user-role bubble', () => {
+    // Locks the optimistic user-bubble path: useChatSession.sendMessage
+    // appends a synthetic user_message NeigeEvent so the bubble appears
+    // instantly without round-tripping through claude.
+    const events: NeigeEvent[] = [
+      {
+        type: 'user_message',
+        session_id: '',
+        content: [{ type: 'text', text: 'hello claude' }],
+      },
+    ];
+    const { timeline } = deriveTimeline(events);
+    expect(timeline.messages).toHaveLength(1);
+    const msg = timeline.messages[0];
+    expect(msg.role).toBe('user');
+    if (msg.role !== 'user') throw new Error('expected user');
+    expect(msg.blocks).toEqual([{ type: 'text', text: 'hello claude' }]);
+  });
+
+  it('handles full optimistic user → assistant streamed reply flow', () => {
+    // End-to-end shape sanity for the most common turn: user sends, claude
+    // streams a reply with thinking + text + tool_use + tool_result.
+    const events: NeigeEvent[] = [
+      {
+        type: 'user_message',
+        session_id: '',
+        content: [{ type: 'text', text: 'read /etc/hostname' }],
+      },
+      {
+        type: 'assistant_message_start',
+        session_id: 's',
+        message_id: 'm1',
+        model: 'claude',
+        parent_tool_use_id: null,
+      },
+      // Thinking
+      {
+        type: 'assistant_content_block_start',
+        session_id: 's',
+        message_id: '',
+        index: 0,
+        block: { type: 'thinking', thinking: '' },
+      },
+      { type: 'assistant_thinking_delta', session_id: 's', message_id: '', index: 0, text: 'reasoning…' },
+      { type: 'assistant_content_block_stop', session_id: 's', message_id: '', index: 0 },
+      // Tool use (Read)
+      {
+        type: 'assistant_content_block_start',
+        session_id: 's',
+        message_id: '',
+        index: 1,
+        block: { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} },
+      },
+      {
+        type: 'assistant_tool_use_input_delta',
+        session_id: 's',
+        message_id: '',
+        index: 1,
+        partial_json: '{"file_path":"/etc/hostname"}',
+      },
+      { type: 'assistant_content_block_stop', session_id: 's', message_id: '', index: 1 },
+      // Tool result (synthesized as a user-side tool_result wrapper)
+      {
+        type: 'tool_result',
+        session_id: 's',
+        tool_use_id: 'toolu_1',
+        content: 'pivot\n',
+        is_error: false,
+      },
+      // Final text block
+      {
+        type: 'assistant_content_block_start',
+        session_id: 's',
+        message_id: '',
+        index: 2,
+        block: { type: 'text', text: '' },
+      },
+      { type: 'assistant_text_delta', session_id: 's', message_id: '', index: 2, text: 'host is pivot' },
+      { type: 'assistant_content_block_stop', session_id: 's', message_id: '', index: 2 },
+      { type: 'assistant_message_stop', session_id: 's', message_id: '' },
+    ];
+    const { timeline, toolResults } = deriveTimeline(events);
+    expect(timeline.messages).toHaveLength(2);
+    expect(timeline.messages[0].role).toBe('user');
+    const asst = timeline.messages[1];
+    if (asst.role !== 'assistant') throw new Error('expected assistant');
+    expect(asst.isComplete).toBe(true);
+    expect(asst.blocks.length).toBe(3);
+    expect(asst.blocks[0].type).toBe('thinking');
+    expect(asst.blocks[1].type).toBe('tool_use');
+    expect(asst.blocks[2].type).toBe('text');
+    if (asst.blocks[1].type !== 'tool_use') throw new Error();
+    expect(asst.blocks[1].input).toEqual({ file_path: '/etc/hostname' });
+    if (asst.blocks[2].type !== 'text') throw new Error();
+    expect(asst.blocks[2].text).toBe('host is pivot');
+    expect(toolResults['toolu_1'].content).toBe('pivot\n');
+    expect(toolResults['toolu_1'].isError).toBe(false);
+  });
+
   it('records result event', () => {
     const events: NeigeEvent[] = [
       {

@@ -234,3 +234,96 @@ impl ChatSessionClient {
         (rx, result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn history_starts_at_seq_one() {
+        // seq=0 is reserved as the "snapshot / reset" sentinel on the wire,
+        // so the first appended event must be 1.
+        let mut h = History::new(1024);
+        assert_eq!(h.append(ev("a")), 1);
+        assert_eq!(h.append(ev("b")), 2);
+        assert_eq!(h.latest_seq(), 2);
+        assert_eq!(h.earliest_seq(), Some(1));
+    }
+
+    #[test]
+    fn history_empty_state() {
+        let h = History::new(1024);
+        assert_eq!(h.latest_seq(), 0);
+        assert_eq!(h.earliest_seq(), None);
+        assert!(h.since(0).is_empty());
+        assert!(h.full_snapshot().is_empty());
+    }
+
+    #[test]
+    fn history_evicts_when_over_budget() {
+        // 3 events of 100 bytes each into a 250-byte budget — oldest two
+        // get dropped (eviction is chunk-granular: each append potentially
+        // drops multiple front entries, but always keeps at least one).
+        let mut h = History::new(250);
+        h.append(ev(&"a".repeat(100)));
+        h.append(ev(&"b".repeat(100)));
+        h.append(ev(&"c".repeat(100)));
+        assert!(h.total_bytes <= 250);
+        // Latest event must always survive.
+        let snap = h.full_snapshot();
+        assert!(!snap.is_empty());
+        assert!(snap.last().unwrap().starts_with('c'));
+    }
+
+    #[test]
+    fn history_keeps_at_least_one_event_even_if_oversized() {
+        // A single event larger than the budget must still be retained —
+        // dropping it would lose the only state we have to replay.
+        let mut h = History::new(50);
+        let big = "x".repeat(500);
+        h.append(big.clone());
+        assert_eq!(h.full_snapshot(), vec![big]);
+    }
+
+    #[test]
+    fn history_since_returns_only_strictly_greater() {
+        let mut h = History::new(10_000);
+        h.append(ev("a")); // seq 1
+        h.append(ev("b")); // seq 2
+        h.append(ev("c")); // seq 3
+        let after_1 = h.since(1);
+        assert_eq!(after_1.len(), 2);
+        assert_eq!(after_1[0].0, 2);
+        assert_eq!(after_1[1].0, 3);
+        // since(latest) is empty.
+        assert!(h.since(3).is_empty());
+        // since(0) returns everything.
+        assert_eq!(h.since(0).len(), 3);
+    }
+
+    #[test]
+    fn history_full_snapshot_preserves_order_and_drops_seq() {
+        let mut h = History::new(10_000);
+        h.append(ev("first"));
+        h.append(ev("second"));
+        h.append(ev("third"));
+        assert_eq!(h.full_snapshot(), vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn history_seq_is_monotonic_across_eviction() {
+        // After eviction, next_seq must keep climbing — replay correctness
+        // relies on seqs never being reused.
+        let mut h = History::new(80);
+        for i in 0..20 {
+            h.append(ev(&format!("e{i:02}-{}", "x".repeat(10))));
+        }
+        assert!(h.latest_seq() >= 20);
+        // earliest is much greater than 1 since older ones got evicted
+        assert!(h.earliest_seq().unwrap() > 1);
+    }
+}
