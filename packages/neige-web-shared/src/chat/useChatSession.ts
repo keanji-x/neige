@@ -182,6 +182,16 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
       return;
     }
     ws.send(JSON.stringify({ type: 'user_message', content }));
+    // Optimistic local render. Claude only echoes the user turn back on
+    // stdout if `--replay-user-messages` is set; rather than depend on that
+    // round-trip we synthesize the same NeigeEvent locally so the bubble
+    // appears instantly. session_id is left blank — the reducer ignores it.
+    const optimistic: NeigeEvent = {
+      type: 'user_message',
+      session_id: '',
+      content: [{ type: 'text', text: content }],
+    };
+    setEvents((prev) => [...prev, optimistic]);
   }, []);
 
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);
