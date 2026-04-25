@@ -11,6 +11,30 @@ use axum::routing::{get, post};
 use clap::{Parser, Subcommand};
 use tower_http::services::ServeDir;
 
+/// Cache-control on static responses. Content-hashed `assets/*` chunks
+/// are safe to cache forever; everything else (index.html, manifest,
+/// favicon) must revalidate so a fresh deploy doesn't strand the user
+/// on a stale index.html that points at chunks that no longer exist
+/// on disk — that's what causes "blank page after deploy" on iOS Safari.
+async fn cache_control_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    let mut response = next.run(req).await;
+    let value = if path.contains("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache, must-revalidate"
+    };
+    if let Ok(v) = value.parse() {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CACHE_CONTROL, v);
+    }
+    response
+}
+
 #[derive(Parser)]
 #[command(name = "neige-server", about = "Web-based terminal session manager")]
 struct Cli {
@@ -360,6 +384,7 @@ async fn main() {
             auth_cfg.clone(),
             auth::origin_check_middleware,
         ))
+        .layer(axum::middleware::from_fn(cache_control_layer))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.listen, cli.port);
