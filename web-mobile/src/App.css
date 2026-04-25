@@ -888,6 +888,25 @@
   background: transparent !important;
 }
 
+/* ──────────── Chat pane (Mode B) ──────────── */
+
+/* Sibling of .term-pane. Keyboard-aware: --kbd-inset is updated by ChatPane
+   from window.visualViewport so the compose bar floats above the iOS soft
+   keyboard instead of disappearing under it. */
+.chat-pane {
+  --kbd-inset: 0px;
+  padding-bottom: var(--kbd-inset);
+}
+
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--bg-primary);
+}
+
 /* ──────────── Scroll edge ──────────── */
 
 .scroll-edge {

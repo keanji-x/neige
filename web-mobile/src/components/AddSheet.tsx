@@ -8,11 +8,12 @@ import {
   Card,
   Checkbox,
   Flex,
+  SegmentedControl,
   Tabs,
   Text,
   TextField,
 } from '@radix-ui/themes'
-import type { ConvInfo, CreateConvRequest } from '../types'
+import type { ConvInfo, CreateConvRequest, SessionMode } from '../types'
 import { getConfig, saveConfig } from '../api'
 import { DirPicker } from './DirPicker'
 
@@ -158,6 +159,7 @@ function NewSessionForm({
   conversations: ConvInfo[]
   onCreate: (req: CreateConvRequest) => Promise<void>
 }) {
+  const [sessionMode, setSessionMode] = useState<SessionMode>('terminal')
   const [title, setTitle] = useState('')
   const [cwd, setCwd] = useState('')
   const [useWorktree, setUseWorktree] = useState(true)
@@ -203,6 +205,7 @@ function NewSessionForm({
         use_worktree: useWorktree,
         worktree_name: worktreeName.trim() || undefined,
         proxy: proxyVal || undefined,
+        mode: sessionMode,
       })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -214,6 +217,25 @@ function NewSessionForm({
   return (
     <form onSubmit={submit}>
       <Flex direction="column" gap="3">
+        <Box>
+          <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+            模式
+          </Text>
+          <SegmentedControl.Root
+            size="2"
+            value={sessionMode}
+            onValueChange={(v) => setSessionMode(v as SessionMode)}
+          >
+            <SegmentedControl.Item value="terminal">Terminal</SegmentedControl.Item>
+            <SegmentedControl.Item value="chat">Chat (Mode B)</SegmentedControl.Item>
+          </SegmentedControl.Root>
+          <Text size="1" color="gray" mt="1" as="div">
+            {sessionMode === 'chat'
+              ? '结构化消息流，无 PTY'
+              : 'xterm + 真实 shell'}
+          </Text>
+        </Box>
+
         <Box>
           <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
             名称
