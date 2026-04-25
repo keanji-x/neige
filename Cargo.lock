@@ -1230,6 +1230,8 @@ dependencies = [
  "nix 0.29.0",
  "portable-pty",
  "serde",
+ "serde_json",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",

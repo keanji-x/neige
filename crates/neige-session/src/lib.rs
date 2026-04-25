@@ -11,6 +11,8 @@
 //!
 //! Framing: length-prefix u32 big-endian + bincode-serde-encoded payload.
 
+pub mod stream_json;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 

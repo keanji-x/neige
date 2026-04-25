@@ -1,3 +1,31 @@
+/* Streaming caret used by the chat TextBlock */
+@keyframes neige-caret-blink {
+  0%, 49% { opacity: 0.7; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Floating button on top-right used to flip into the chat-demo route */
+.chat-demo-toggle {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  transition: all var(--transition-fast);
+}
+
+.chat-demo-toggle:hover {
+  background: var(--bg-hover);
+  border-color: var(--blue);
+}
+
 /* ===== Layout ===== */
 .app {
   display: flex;

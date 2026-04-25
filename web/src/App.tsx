@@ -7,6 +7,8 @@ import { CreateDialog } from './components/CreateDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { FilePicker } from './components/FilePicker';
 import { QuickLauncher } from './components/QuickLauncher';
+import { ChatView } from './components/chat/ChatView';
+import { mockEvents } from './components/chat/mockEvents';
 import { useConversations } from './hooks/useConversations';
 import { useConfig } from './hooks/useConfig';
 import type { CreateConvRequest } from './types';
@@ -16,6 +18,15 @@ function App() {
   const { conversations, connected, create, rename, remove } = useConversations();
   const { config, update: updateConfig } = useConfig();
   const { toast } = useToast();
+  // Hash-routed chat demo (#/chat-demo). Cheap router so we don't pull
+  // react-router in just to swap the main pane.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const showChatDemo = hash === '#/chat-demo';
   const [showCreate, setShowCreate] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showQuickLauncher, setShowQuickLauncher] = useState(false);
@@ -233,11 +244,23 @@ function App() {
         }}
       />
       <main className="main">
-        <TerminalPanel
-          dockviewApiRef={dockviewApiRef}
-          onTabClose={handleTabClose}
-          onTabStateChange={syncTabState}
-        />
+        <button
+          className="chat-demo-toggle"
+          onClick={() => {
+            window.location.hash = showChatDemo ? '' : '#/chat-demo';
+          }}
+        >
+          {showChatDemo ? 'Exit Demo' : 'Chat Demo'}
+        </button>
+        {showChatDemo ? (
+          <ChatView events={mockEvents} />
+        ) : (
+          <TerminalPanel
+            dockviewApiRef={dockviewApiRef}
+            onTabClose={handleTabClose}
+            onTabStateChange={syncTabState}
+          />
+        )}
       </main>
       <QuickLauncher
         open={showQuickLauncher}
