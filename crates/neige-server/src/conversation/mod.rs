@@ -388,6 +388,12 @@ fn build_chat_argv(program: &str, session_id: &Uuid, resume: bool) -> Vec<String
     let mut argv = vec![
         bin,
         "--print".to_string(),
+        // Claude CLI rejects --print + --output-format=stream-json without
+        // --verbose ("Error: When using --print, --output-format=stream-json
+        // requires --verbose"). Without this flag the subprocess exits 1
+        // immediately, the daemon sees ChildExited, and the socket vanishes
+        // — so user-message frames write into the void.
+        "--verbose".to_string(),
         "--input-format=stream-json".to_string(),
         "--output-format=stream-json".to_string(),
         "--include-partial-messages".to_string(),
