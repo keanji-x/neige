@@ -398,6 +398,15 @@ fn build_chat_argv(program: &str, session_id: &Uuid, resume: bool) -> Vec<String
         "--output-format=stream-json".to_string(),
         "--include-partial-messages".to_string(),
         "--include-hook-events".to_string(),
+        // AskUserQuestion is a built-in tool the Claude Code TUI intercepts
+        // via canUseTool to render an interactive picker. In --print mode
+        // there is no canUseTool callback so the harness fallback returns a
+        // 17-char placeholder ("Answer questions?") immediately, which
+        // claude reads as the answer and moves on — the user never sees a
+        // popup. Until we ship a real MCP-based replacement (Wave 5), block
+        // the tool so the model writes questions as markdown instead.
+        "--disallowedTools".to_string(),
+        "AskUserQuestion".to_string(),
     ];
     if resume {
         argv.push("--resume".to_string());
@@ -732,5 +741,23 @@ mod tests {
         let argv = build_chat_argv("claude", &Uuid::nil(), false);
         assert!(argv.iter().any(|a| a == "--include-partial-messages"));
         assert!(argv.iter().any(|a| a == "--include-hook-events"));
+    }
+
+    #[test]
+    fn build_chat_argv_disallows_ask_user_question() {
+        // Until we ship an MCP-based AskUser tool, block the built-in so the
+        // model writes questions as text instead of triggering the --print
+        // harness's 17-char placeholder.
+        let argv = build_chat_argv("claude", &Uuid::nil(), false);
+        let mut iter = argv.iter();
+        let mut found = false;
+        while let Some(a) = iter.next() {
+            if a == "--disallowedTools" {
+                assert_eq!(iter.next().map(|s| s.as_str()), Some("AskUserQuestion"));
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "missing --disallowedTools AskUserQuestion: {argv:?}");
     }
 }
