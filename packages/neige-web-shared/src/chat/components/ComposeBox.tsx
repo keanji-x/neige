@@ -1,5 +1,7 @@
-// Compose textarea with Cmd/Ctrl+Enter to submit. Wiring is intentionally
-// stubbed — onSubmit just receives the text; the parent decides what to do.
+// Compose textarea: Enter submits, Shift+Enter inserts a newline. Cmd/Ctrl+Enter
+// also submits for muscle-memory parity with editor compose surfaces. Wiring
+// is intentionally stubbed — onSubmit just receives the text; the parent
+// decides what to do.
 
 import { useState, useRef } from 'react';
 import { Box, Flex, IconButton, TextArea } from '@radix-ui/themes';
@@ -37,12 +39,21 @@ export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps)
             ref={taRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholder ?? 'Send a message — Cmd+Enter to submit'}
+            placeholder={placeholder ?? 'Send a message — Enter to submit, Shift+Enter for newline'}
             size="2"
             resize="vertical"
             disabled={disabled}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              // IME composition guard: Enter while a CJK candidate is open
+              // must not submit. `keyCode === 229` is the legacy signal;
+              // `nativeEvent.isComposing` is the modern one. Either flag
+              // means the IME is mid-composition.
+              if (
+                e.key === 'Enter' &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
                 e.preventDefault();
                 submit();
               }
