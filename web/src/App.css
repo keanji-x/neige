@@ -1,30 +1,5 @@
-/* Streaming caret used by the chat TextBlock */
-@keyframes neige-caret-blink {
-  0%, 49% { opacity: 0.7; }
-  50%, 100% { opacity: 0; }
-}
-
-/* Floating button on top-right used to flip into the chat-demo route */
-.chat-demo-toggle {
-  position: fixed;
-  top: 12px;
-  right: 16px;
-  z-index: 100;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: var(--font-sans);
-  transition: all var(--transition-fast);
-}
-
-.chat-demo-toggle:hover {
-  background: var(--bg-hover);
-  border-color: var(--blue);
-}
+/* `neige-caret-blink` lives in @neige/shared theme.css so web-mobile
+   inherits it too. */
 
 /* ===== Layout ===== */
 .app {
@@ -438,6 +413,55 @@
   align-items: center;
   flex-shrink: 0;
   margin-left: 4px;
+}
+
+/* Mode icon shown next to each conversation row (terminal vs chat) */
+.conv-mode-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+.conv-mode-icon.chat {
+  color: var(--blue);
+  opacity: 0.9;
+}
+
+/* Floating connection-status chip in the corner of a chat panel */
+.chat-status-chip {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 5;
+  font-size: 10px;
+  font-family: var(--font-sans);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+
+.chat-status-chip.chat-status-open {
+  color: var(--green-bright);
+  border-color: rgba(63, 185, 80, 0.35);
+}
+
+.chat-status-chip.chat-status-connecting,
+.chat-status-chip.chat-status-reconnecting {
+  color: var(--yellow, #d29922);
+  border-color: rgba(210, 153, 34, 0.35);
+}
+
+.chat-status-chip.chat-status-closed {
+  color: var(--text-faint);
 }
 
 .btn-delete {

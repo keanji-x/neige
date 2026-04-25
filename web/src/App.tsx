@@ -7,8 +7,6 @@ import { CreateDialog } from './components/CreateDialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { FilePicker } from './components/FilePicker';
 import { QuickLauncher } from './components/QuickLauncher';
-import { ChatView } from './components/chat/ChatView';
-import { mockEvents } from './components/chat/mockEvents';
 import { useConversations } from './hooks/useConversations';
 import { useConfig } from './hooks/useConfig';
 import type { CreateConvRequest } from './types';
@@ -18,15 +16,6 @@ function App() {
   const { conversations, connected, create, rename, remove } = useConversations();
   const { config, update: updateConfig } = useConfig();
   const { toast } = useToast();
-  // Hash-routed chat demo (#/chat-demo). Cheap router so we don't pull
-  // react-router in just to swap the main pane.
-  const [hash, setHash] = useState(() => window.location.hash);
-  useEffect(() => {
-    const onHash = () => setHash(window.location.hash);
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-  const showChatDemo = hash === '#/chat-demo';
   const [showCreate, setShowCreate] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showQuickLauncher, setShowQuickLauncher] = useState(false);
@@ -51,7 +40,7 @@ function App() {
   }, []);
 
   const openTab = useCallback(
-    (id: string, title?: string) => {
+    (id: string, title?: string, modeOverride?: 'terminal' | 'chat') => {
       const api = dockviewApiRef.current;
       if (!api) return;
 
@@ -62,14 +51,19 @@ function App() {
         return;
       }
 
+      const conv = conversations.find((c) => c.id === id);
       // Use provided title, or look up from current conversations
-      const resolvedTitle =
-        title ?? conversations.find((c) => c.id === id)?.title ?? 'untitled';
+      const resolvedTitle = title ?? conv?.title ?? 'untitled';
+      // Chat-mode sessions render a ChatView; everything else uses xterm.
+      // Caller can pass modeOverride to avoid stale-state lookup right after
+      // create() resolves (the conversations array may not have re-rendered yet).
+      const mode = modeOverride ?? conv?.mode ?? 'terminal';
+      const component = mode === 'chat' ? 'chat' : 'terminal';
 
       api.addPanel({
         id,
         title: resolvedTitle,
-        component: 'terminal',
+        component,
         params: { convId: id },
       });
     },
@@ -80,7 +74,7 @@ function App() {
     async (req: CreateConvRequest) => {
       try {
         const conv = await create(req);
-        openTab(conv.id, conv.title);
+        openTab(conv.id, conv.title, conv.mode);
         // Save to recent commands
         const recent = config.recentCommands || [];
         const entry = { program: req.program, cwd: req.cwd, title: req.title, use_worktree: req.use_worktree };
@@ -244,23 +238,11 @@ function App() {
         }}
       />
       <main className="main">
-        <button
-          className="chat-demo-toggle"
-          onClick={() => {
-            window.location.hash = showChatDemo ? '' : '#/chat-demo';
-          }}
-        >
-          {showChatDemo ? 'Exit Demo' : 'Chat Demo'}
-        </button>
-        {showChatDemo ? (
-          <ChatView events={mockEvents} />
-        ) : (
-          <TerminalPanel
-            dockviewApiRef={dockviewApiRef}
-            onTabClose={handleTabClose}
-            onTabStateChange={syncTabState}
-          />
-        )}
+        <TerminalPanel
+          dockviewApiRef={dockviewApiRef}
+          onTabClose={handleTabClose}
+          onTabStateChange={syncTabState}
+        />
       </main>
       <QuickLauncher
         open={showQuickLauncher}

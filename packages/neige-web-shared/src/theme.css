@@ -76,3 +76,12 @@
   --z-modal: 51;
   --z-toast: 60;
 }
+
+
+/* Streaming caret used by chat/components/TextBlock — kept here so any
+   app that imports `@neige/shared/theme.css` picks it up without each
+   app re-declaring the keyframes. */
+@keyframes neige-caret-blink {
+  0%, 49% { opacity: 0.7; }
+  50%, 100% { opacity: 0; }
+}

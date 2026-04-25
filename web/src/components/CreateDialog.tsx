@@ -7,11 +7,12 @@ import {
   Checkbox,
   Dialog,
   Flex,
+  SegmentedControl,
   Select,
   Text,
   TextField,
 } from '@radix-ui/themes';
-import type { CreateConvRequest, DirEntry } from '../types';
+import type { CreateConvRequest, DirEntry, SessionMode } from '../types';
 import { browseDir, isGitRepo } from '../api';
 import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
 
@@ -27,6 +28,7 @@ const PROGRAMS = ['claude', 'bash', 'zsh', 'python3', 'node'];
 
 export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }: CreateDialogProps) {
   const [title, setTitle] = useState('');
+  const [mode, setMode] = useState<SessionMode>('terminal');
   const [program, setProgram] = useState('claude');
   const [customProgram, setCustomProgram] = useState('');
   const [cwd, setCwd] = useState('');
@@ -46,6 +48,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
   useEffect(() => {
     if (open) {
       setTitle('');
+      setMode('terminal');
       setProgram('claude');
       setCustomProgram('');
       setCwd('');
@@ -156,7 +159,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     const trimmedCwd = cwd.trim();
     const trimmedWorktreeName = worktreeName.trim();
 
-    if (useWorktree && isClaudeProgram && trimmedWorktreeName) {
+    // Worktree validation is terminal-mode only — chat mode doesn't pipe
+    // --worktree to claude yet, so skip the git-repo check entirely.
+    if (mode === 'terminal' && useWorktree && isClaudeProgram && trimmedWorktreeName) {
       if (!/^[A-Za-z0-9._-]+$/.test(trimmedWorktreeName)) {
         setWorktreeError(
           'Worktree name can only contain letters, digits, dots, underscores, and hyphens.',
@@ -164,7 +169,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
         return;
       }
     }
-    if (useWorktree && isClaudeProgram) {
+    if (mode === 'terminal' && useWorktree && isClaudeProgram) {
       try {
         const ok = await isGitRepo(trimmedCwd);
         if (!ok) {
@@ -187,8 +192,14 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
       program: effectiveProgram,
       cwd: trimmedCwd,
       proxy: proxyVal || undefined,
-      use_worktree: useWorktree,
-      worktree_name: useWorktree && trimmedWorktreeName ? trimmedWorktreeName : undefined,
+      // In chat mode the backend doesn't yet pass --worktree to claude,
+      // so force-disable on the wire even if the user toggled it.
+      use_worktree: mode === 'chat' ? false : useWorktree,
+      worktree_name:
+        mode === 'terminal' && useWorktree && trimmedWorktreeName
+          ? trimmedWorktreeName
+          : undefined,
+      mode,
     });
     onClose();
   };
@@ -235,6 +246,9 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                       color="gray"
                       onClick={() => {
                         setTitle(cmd.title || '');
+                        // Recent commands are terminal-mode (chat mode doesn't
+                        // capture into recents yet), so reset mode on apply.
+                        setMode('terminal');
                         setProgram(PROGRAMS.includes(cmd.program) ? cmd.program : '__custom__');
                         if (!PROGRAMS.includes(cmd.program)) setCustomProgram(cmd.program);
                         setCwd(cmd.cwd);
@@ -251,6 +265,34 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
                 </Flex>
               </Box>
             )}
+
+            <Box>
+              <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
+                Mode
+              </Text>
+              <SegmentedControl.Root
+                value={mode}
+                onValueChange={(v) => {
+                  const next = (v as SessionMode) || 'terminal';
+                  setMode(next);
+                  // Chat mode currently only supports the `claude` program,
+                  // so snap the program field on switch. Field stays editable
+                  // in case someone wants e.g. `claude --model …` later.
+                  if (next === 'chat') {
+                    setProgram('claude');
+                    setCustomProgram('');
+                  }
+                }}
+              >
+                <SegmentedControl.Item value="terminal">Terminal</SegmentedControl.Item>
+                <SegmentedControl.Item value="chat">Chat</SegmentedControl.Item>
+              </SegmentedControl.Root>
+              {mode === 'chat' && (
+                <Text size="1" color="gray" mt="2" as="div">
+                  Chat mode runs Claude in headless stream-json mode (preview).
+                </Text>
+              )}
+            </Box>
 
             <Box>
               <Text as="label" size="2" weight="medium" mb="1" style={{ display: 'block' }}>
@@ -314,7 +356,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
               />
             </Box>
 
-            {isClaudeProgram && (
+            {isClaudeProgram && mode === 'terminal' && (
               <Card>
                 <Flex direction="column" gap="3">
                   <Text as="label" size="2">
