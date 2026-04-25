@@ -17,12 +17,14 @@ import {
 } from 'lucide-react';
 import type { ToolResultContent } from '../types';
 import { ToolResultBlock } from './ToolResultBlock';
+import { DefaultToolCard, lookupToolRenderer } from '../tools';
 
 interface ToolUseBlockProps {
   name: string;
   input: unknown;
   isStreaming: boolean;
   result?: { content: ToolResultContent; isError: boolean };
+  respond: (text: string) => void;
 }
 
 const ICONS: Record<string, LucideIcon> = {
@@ -80,9 +82,10 @@ function summarizeInput(name: string, input: unknown): string {
   }
 }
 
-export function ToolUseBlock({ name, input, isStreaming, result }: ToolUseBlockProps) {
+export function ToolUseBlock({ name, input, isStreaming, result, respond }: ToolUseBlockProps) {
   const [open, setOpen] = useState(false);
   const summary = summarizeInput(name, input);
+  const Renderer = lookupToolRenderer(name) ?? DefaultToolCard;
 
   return (
     <Box
@@ -124,26 +127,13 @@ export function ToolUseBlock({ name, input, isStreaming, result }: ToolUseBlockP
       </Flex>
       {open && (
         <Box px="3" pb="3">
-          <Box
-            mt="1"
-            style={{
-              fontFamily: 'var(--code-font-family)',
-              fontSize: '0.78rem',
-              whiteSpace: 'pre-wrap',
-              color: 'var(--gray-12)',
-              background: 'var(--color-panel-solid)',
-              padding: '8px 10px',
-              borderRadius: 'var(--radius-2)',
-              border: '1px solid var(--gray-a4)',
-              maxHeight: 280,
-              overflow: 'auto',
-            }}
-          >
-            {JSON.stringify(input, null, 2)}
-          </Box>
-          {result && (
-            <ToolResultBlock content={result.content} isError={result.isError} />
-          )}
+          <Renderer
+            name={name}
+            input={input}
+            isStreaming={isStreaming}
+            result={result}
+            respond={respond}
+          />
         </Box>
       )}
       {!open && result && (

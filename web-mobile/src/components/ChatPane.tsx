@@ -26,7 +26,7 @@ const STICK_THRESHOLD_PX = 120
  * TerminalPane.
  */
 export function ChatPane({ conv, active, onOverview, onPrev, onNext, canCycle }: Props) {
-  const { events, timeline, toolResults, status, sendMessage } = useChatSession({
+  const { events, timeline, toolResults, status, sendMessage, stop, isGenerating } = useChatSession({
     sessionId: conv.id,
   })
 
@@ -168,9 +168,21 @@ export function ChatPane({ conv, active, onOverview, onPrev, onNext, canCycle }:
           </Flex>
         ) : (
           <Box px="3" py="3">
-            {timeline.messages.map((m) => (
-              <MessageBubble key={m.id} message={m} toolResults={toolResults} />
-            ))}
+            {(() => {
+              let lastUserIndex = -1;
+              for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
+                if (timeline.messages[i].role === 'user') { lastUserIndex = i; break; }
+              }
+              return timeline.messages.map((m, i) => (
+                <MessageBubble
+                  key={m.id}
+                  message={m}
+                  toolResults={toolResults}
+                  respond={sendMessage}
+                  canEdit={m.role === 'user' && i === lastUserIndex}
+                />
+              ));
+            })()}
             {timeline.result && (
               <Flex justify="center" py="2">
                 <Text size="1" color="gray">
@@ -200,10 +212,11 @@ export function ChatPane({ conv, active, onOverview, onPrev, onNext, canCycle }:
       </Box>
 
       <ComposeBar
-        busy={false}
+        busy={isGenerating}
         variant="chat"
         placeholder="message Claude…"
         onSend={(text) => sendMessage(text)}
+        onStop={stop}
       />
     </div>
   )

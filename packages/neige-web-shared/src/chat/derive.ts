@@ -54,10 +54,18 @@ export type ChatMessage =
       isComplete: boolean;
     };
 
+export interface PassthroughEntry {
+  id: string;
+  kind: string;
+  payload: unknown;
+  insertedAfterMessageIndex: number | null;
+}
+
 export interface ChatTimeline {
   init: SessionInit | null;
   status: string | null;
   messages: ChatMessage[];
+  passthroughs: PassthroughEntry[];
   result: Result | null;
 }
 
@@ -144,9 +152,11 @@ export function deriveTimeline(events: NeigeEvent[]): DeriveResult {
     init: null,
     status: null,
     messages: [],
+    passthroughs: [],
     result: null,
   };
   const toolResults: ToolResultsById = {};
+  let passthroughCounter = 0;
 
   for (const ev of events) {
     switch (ev.type) {
@@ -278,6 +288,17 @@ export function deriveTimeline(events: NeigeEvent[]): DeriveResult {
           totalCostUsd: ev.total_cost_usd,
           terminalReason: ev.terminal_reason,
         };
+        break;
+      }
+      case 'passthrough': {
+        const idx = timeline.messages.length - 1;
+        timeline.passthroughs.push({
+          id: `passthrough-${passthroughCounter}`,
+          kind: ev.kind,
+          payload: ev.payload,
+          insertedAfterMessageIndex: idx >= 0 ? idx : null,
+        });
+        passthroughCounter += 1;
         break;
       }
       case 'assistant_checkpoint':

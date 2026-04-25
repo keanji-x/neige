@@ -1,18 +1,20 @@
 // WebSocket-driven event-stream hook for the unified Claude-Code chat surface.
 // Counterpart to useTerminalCore: same status state machine, same debounced
-// reconnect, but the wire payload here is JSON NeigeEvent frames instead of
-// framed PTY bytes.
+// reconnect, but the wire payload here is JSON envelopes instead of framed
+// PTY bytes.
 //
 // Wire contract (mirrors crates/neige-server's chat WS handler):
 //   URL: /ws/<sessionId>/chat (ws: or wss: per page protocol)
 //   Client → server text JSON:
 //     {"type":"attach","last_seq":<number|null>}   // first frame
 //     {"type":"user_message","content":"…"}        // when user submits
+//     {"type":"stop"}                              // interrupt current turn
 //   Server → client text JSON:
 //     {"type":"hello","last_seq":<n>}              // attach ack
-//     <bare NeigeEvent>                            // every other frame
-//   Hello vs NeigeEvent are disambiguated by `session_id` presence: every
-//   NeigeEvent has it, hello does not.
+//     {"seq":<n>,"event":<NeigeEvent>}             // every other frame
+//   Hello vs event envelopes are disambiguated by `type === 'hello'`. Each
+//   live event carries its own seq, so we keep `lastSeqRef` fresh and ask
+//   for a Delta on reconnect instead of always replaying from scratch.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -36,8 +38,12 @@ export interface UseChatSessionApi {
   timeline: ChatTimeline;
   toolResults: ToolResultsById;
   status: ChatSessionStatus;
+  /** True when the most recent assistant message hasn't yet emitted message_stop. */
+  isGenerating: boolean;
   /** Send a user message. No-op if WS not open. */
   sendMessage: (content: string) => void;
+  /** Interrupt the current claude turn (server SIGINTs the subprocess). No-op if WS not open. */
+  stop: () => void;
 }
 
 const MAX_RECONNECT_DELAY = 10000;
@@ -45,6 +51,11 @@ const MAX_RECONNECT_DELAY = 10000;
 interface HelloFrame {
   type: 'hello';
   last_seq?: number | null;
+}
+
+interface EventEnvelope {
+  seq: number;
+  event: NeigeEvent;
 }
 
 function isHelloFrame(parsed: unknown): parsed is HelloFrame {
@@ -55,6 +66,12 @@ function isHelloFrame(parsed: unknown): parsed is HelloFrame {
   return (parsed as { type?: unknown }).type === 'hello';
 }
 
+function isEventEnvelope(parsed: unknown): parsed is EventEnvelope {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const obj = parsed as { seq?: unknown; event?: unknown };
+  return typeof obj.seq === 'number' && !!obj.event && typeof obj.event === 'object';
+}
+
 export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
   const { sessionId, onStatusChange } = opts;
 
@@ -62,10 +79,6 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
   const [status, setStatus] = useState<ChatSessionStatus>('closed');
 
   const wsRef = useRef<WebSocket | null>(null);
-  // TODO(seq): the chat WS endpoint may eventually emit explicit per-event
-  // sequence numbers (matching the daemon's framing). For now the backend
-  // sends bare NeigeEvent JSON without seq, so we always reconnect with
-  // last_seq:null (full snapshot). Update once the backend exposes seq.
   const lastSeqRef = useRef<number | null>(null);
 
   // Mirror status into a ref so the WS callbacks can read the latest value
@@ -118,9 +131,10 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
           }
           return;
         }
-        // Anything else is a NeigeEvent (validated implicitly by the consumer).
-        const ev = parsed as NeigeEvent;
-        setEvents((prev) => [...prev, ev]);
+        if (isEventEnvelope(parsed)) {
+          lastSeqRef.current = parsed.seq;
+          setEvents((prev) => [...prev, parsed.event]);
+        }
       };
 
       ws.onerror = () => {
@@ -194,7 +208,23 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     setEvents((prev) => [...prev, optimistic]);
   }, []);
 
+  const stop = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'stop' }));
+  }, []);
+
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);
 
-  return { events, timeline, toolResults, status, sendMessage };
+  // "Generating" = the last message is an in-flight assistant turn. We treat
+  // optimistic user bubbles tacked onto the end as still-generating since the
+  // server hasn't yet started to reply.
+  const isGenerating = (() => {
+    const last = timeline.messages[timeline.messages.length - 1];
+    if (!last) return false;
+    if (last.role === 'user') return true;
+    return !last.isComplete;
+  })();
+
+  return { events, timeline, toolResults, status, isGenerating, sendMessage, stop };
 }

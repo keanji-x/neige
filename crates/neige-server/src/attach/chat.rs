@@ -77,8 +77,8 @@ impl History {
             .collect()
     }
 
-    fn full_snapshot(&self) -> Vec<String> {
-        self.events.iter().map(|(_, j)| j.clone()).collect()
+    fn full_snapshot(&self) -> Vec<(u64, String)> {
+        self.events.iter().cloned().collect()
     }
 }
 
@@ -92,7 +92,7 @@ pub enum AttachResult {
         latest_seq: u64,
     },
     Snapshot {
-        events: Vec<String>,
+        events: Vec<(u64, String)>,
         latest_seq: u64,
     },
 }
@@ -276,7 +276,7 @@ mod tests {
         // Latest event must always survive.
         let snap = h.full_snapshot();
         assert!(!snap.is_empty());
-        assert!(snap.last().unwrap().starts_with('c'));
+        assert!(snap.last().unwrap().1.starts_with('c'));
     }
 
     #[test]
@@ -285,8 +285,8 @@ mod tests {
         // dropping it would lose the only state we have to replay.
         let mut h = History::new(50);
         let big = "x".repeat(500);
-        h.append(big.clone());
-        assert_eq!(h.full_snapshot(), vec![big]);
+        let seq = h.append(big.clone());
+        assert_eq!(h.full_snapshot(), vec![(seq, big)]);
     }
 
     #[test]
@@ -306,12 +306,19 @@ mod tests {
     }
 
     #[test]
-    fn history_full_snapshot_preserves_order_and_drops_seq() {
+    fn history_full_snapshot_preserves_order_and_carries_seq() {
         let mut h = History::new(10_000);
         h.append(ev("first"));
         h.append(ev("second"));
         h.append(ev("third"));
-        assert_eq!(h.full_snapshot(), vec!["first", "second", "third"]);
+        assert_eq!(
+            h.full_snapshot(),
+            vec![
+                (1, "first".to_string()),
+                (2, "second".to_string()),
+                (3, "third".to_string()),
+            ],
+        );
     }
 
     #[test]

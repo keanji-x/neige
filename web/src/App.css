@@ -800,22 +800,8 @@
   overflow: hidden;
 }
 
-/* Dockview theme overrides */
-.dockview-theme-dark {
-  --dv-background-color: var(--bg-primary);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-primary);
-  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-secondary);
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg-secondary);
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-secondary);
-  --dv-tabs-and-actions-container-background-color: var(--bg-secondary);
-  --dv-tab-divider-color: var(--border);
-  --dv-activegroup-visiblepanel-tab-color: var(--text-primary);
-  --dv-activegroup-hiddenpanel-tab-color: var(--text-muted);
-  --dv-inactivegroup-visiblepanel-tab-color: var(--text-secondary);
-  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-muted);
-  --dv-separator-border: var(--border);
-  --dv-paneview-header-border-color: var(--border);
-  --dv-group-view-background-color: var(--bg-primary);
+/* Let the dockview theme own its colors. Only typography is forced. */
+[class*="dockview-theme-"] {
   font-family: var(--font-sans);
 }
 
@@ -838,12 +824,10 @@
   min-width: 0;
 }
 
-/* Prevent dockview internal containers from leaking content */
-.dockview-theme-dark .dv-content-container {
-  overflow: hidden;
-}
-
-.dockview-theme-dark .dv-split-view-container .dv-view-container .dv-view {
+/* Prevent dockview internal containers from leaking content. Theme-agnostic
+   so swapping themes doesn't require touching this. */
+[class*="dockview-theme-"] .dv-content-container,
+[class*="dockview-theme-"] .dv-split-view-container .dv-view-container .dv-view {
   overflow: hidden;
 }
 

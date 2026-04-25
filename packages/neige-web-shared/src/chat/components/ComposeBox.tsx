@@ -1,17 +1,28 @@
-// Compose textarea with Cmd/Ctrl+Enter to submit. Wiring is intentionally
-// stubbed — onSubmit just receives the text; the parent decides what to do.
+// Compose textarea: Enter submits, Shift+Enter inserts a newline. Cmd/Ctrl+Enter
+// also submits for muscle-memory parity with editor compose surfaces. Wiring
+// is intentionally stubbed — onSubmit just receives the text; the parent
+// decides what to do.
 
 import { useState, useRef } from 'react';
 import { Box, Flex, IconButton, TextArea } from '@radix-ui/themes';
-import { Send } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
 
 interface ComposeBoxProps {
   onSubmit: (text: string) => void;
+  /** When set + isGenerating is true, the right-hand button becomes a Stop. */
+  onStop?: () => void;
+  isGenerating?: boolean;
   placeholder?: string;
   disabled?: boolean;
 }
 
-export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps) {
+export function ComposeBox({
+  onSubmit,
+  onStop,
+  isGenerating,
+  placeholder,
+  disabled,
+}: ComposeBoxProps) {
   const [value, setValue] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -37,12 +48,21 @@ export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps)
             ref={taRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholder ?? 'Send a message — Cmd+Enter to submit'}
+            placeholder={placeholder ?? 'Send a message — Enter to submit, Shift+Enter for newline'}
             size="2"
             resize="vertical"
             disabled={disabled}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              // IME composition guard: Enter while a CJK candidate is open
+              // must not submit. `keyCode === 229` is the legacy signal;
+              // `nativeEvent.isComposing` is the modern one. Either flag
+              // means the IME is mid-composition.
+              if (
+                e.key === 'Enter' &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
                 e.preventDefault();
                 submit();
               }
@@ -50,14 +70,26 @@ export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps)
             style={{ minHeight: 64 }}
           />
         </Box>
-        <IconButton
-          size="3"
-          onClick={submit}
-          disabled={disabled || !value.trim()}
-          aria-label="Send message"
-        >
-          <Send size={16} />
-        </IconButton>
+        {isGenerating && onStop ? (
+          <IconButton
+            size="3"
+            color="red"
+            variant="solid"
+            onClick={onStop}
+            aria-label="Stop generation"
+          >
+            <Square size={14} />
+          </IconButton>
+        ) : (
+          <IconButton
+            size="3"
+            onClick={submit}
+            disabled={disabled || !value.trim()}
+            aria-label="Send message"
+          >
+            <Send size={16} />
+          </IconButton>
+        )}
       </Flex>
     </Box>
   );

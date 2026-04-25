@@ -23,6 +23,7 @@ use std::io::Write as _;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -298,6 +299,11 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
     let child_stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("missing child stdin"))?;
     let child_stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
     let child_stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing child stderr"))?;
+    // Capture the PID before the wait task takes ownership of `child`; chat
+    // clients SIGINT through this to interrupt an in-flight turn.
+    let child_pid: Arc<AtomicI32> = Arc::new(AtomicI32::new(
+        child.id().map(|p| p as i32).unwrap_or(0),
+    ));
 
     let buffer: SharedEventBuffer = Arc::new(Mutex::new(EventBuffer::new(cli.buffer_bytes)));
     let (event_tx, _) = broadcast::channel::<ChatEvt>(2048);
@@ -310,10 +316,14 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
     // ---- child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let event_tx_w = event_tx.clone();
+    let child_pid_w = child_pid.clone();
     tokio::spawn(async move {
         let status = child.wait().await.ok();
         let code = status.and_then(|s| s.code());
         tracing::info!(?code, "chat child wait returned");
+        // Clear the pid so a late ChatStop after exit can't SIGINT a recycled
+        // unrelated process.
+        child_pid_w.store(0, Ordering::SeqCst);
         let _ = event_tx_w.send(ChatEvt::Exit(code));
         let _ = shutdown_tx.send(());
     });
@@ -329,6 +339,7 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         event_tx.clone(),
         buffer.clone(),
         stdin_tx.clone(),
+        child_pid.clone(),
     ));
 
     let _ = shutdown_rx.await;
@@ -437,14 +448,14 @@ fn spawn_chat_stdout_reader(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let raw = match parse_line(&line) {
+                    let (raw, original) = match parse_line(&line) {
                         Ok(r) => r,
                         Err(e) => {
                             tracing::debug!(error = %e, line = %line, "stream_json parse error");
                             continue;
                         }
                     };
-                    for ev in to_neige_events(raw) {
+                    for ev in to_neige_events(raw, original) {
                         match serde_json::to_string(&ev) {
                             Ok(json) => {
                                 if let Ok(mut b) = buffer.lock() {
@@ -553,6 +564,7 @@ async fn accept_chat_loop(
     event_tx: broadcast::Sender<ChatEvt>,
     buffer: SharedEventBuffer,
     stdin_tx: mpsc::UnboundedSender<String>,
+    child_pid: Arc<AtomicI32>,
 ) {
     loop {
         match listener.accept().await {
@@ -560,8 +572,11 @@ async fn accept_chat_loop(
                 let event_rx = event_tx.subscribe();
                 let buffer = buffer.clone();
                 let stdin_tx = stdin_tx.clone();
+                let child_pid = child_pid.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_chat_client(sock, event_rx, buffer, stdin_tx).await {
+                    if let Err(e) =
+                        handle_chat_client(sock, event_rx, buffer, stdin_tx, child_pid).await
+                    {
                         tracing::debug!(error = %e, "chat client ended");
                     }
                 });
@@ -648,10 +663,10 @@ async fn handle_client(
                 tracing::info!("client requested Kill; signaling child");
                 kill_child(&master, &killer);
             }
-            ClientMsg::ChatUserMessage { .. } => {
-                // Wrong mode — ignore quietly. Server should never send this
-                // to a terminal-mode daemon.
-                tracing::debug!("ignoring ChatUserMessage in terminal mode");
+            ClientMsg::ChatUserMessage { .. } | ClientMsg::ChatStop => {
+                // Wrong mode — ignore quietly. Server should never send chat-
+                // mode frames to a terminal-mode daemon.
+                tracing::debug!("ignoring chat-mode frame in terminal mode");
             }
         }
     }
@@ -667,6 +682,7 @@ async fn handle_chat_client(
     mut event_rx: broadcast::Receiver<ChatEvt>,
     buffer: SharedEventBuffer,
     stdin_tx: mpsc::UnboundedSender<String>,
+    child_pid: Arc<AtomicI32>,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
 
@@ -727,6 +743,19 @@ async fn handle_chat_client(
                 // The child-waiter then broadcasts Exit and we shut down.
                 drop(stdin_tx);
                 break;
+            }
+            ClientMsg::ChatStop => {
+                let pid = child_pid.load(Ordering::SeqCst);
+                if pid > 0 {
+                    if let Err(e) = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGINT,
+                    ) {
+                        tracing::warn!(error = %e, pid, "chat stop SIGINT failed");
+                    } else {
+                        tracing::info!(pid, "chat stop SIGINT delivered");
+                    }
+                }
             }
             // Wrong-mode frames — quietly ignored.
             ClientMsg::Stdin(_) | ClientMsg::Resize { .. } => {

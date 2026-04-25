@@ -37,6 +37,11 @@ pub enum ClientMsg {
     /// input frame: `{"type":"user","message":{"role":"user","content":"..."}}`
     /// before writing to the child's stdin. Ignored in terminal mode.
     ChatUserMessage { content: String },
+    /// Interrupt an in-flight chat turn. The daemon delivers SIGINT to the
+    /// claude subprocess; claude handles it gracefully (stops generating,
+    /// emits message_stop with an interrupted reason, stays open for the
+    /// next user_message). Ignored in terminal mode.
+    ChatStop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

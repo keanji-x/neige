@@ -13,6 +13,22 @@ export {
   ComposeBox,
   mockEvents,
 } from './chat/components';
+export {
+  passthroughRegistry,
+  registerPassthroughRenderer,
+  lookupRenderer,
+  DefaultPassthroughCard,
+  HookEventCard,
+} from './chat/passthrough';
+export type { PassthroughRenderer } from './chat/passthrough';
+export {
+  toolRegistry,
+  registerToolRenderer,
+  lookupToolRenderer,
+  DefaultToolCard,
+  AskUserQuestionCard,
+} from './chat/tools';
+export type { ToolRenderer, ToolRendererProps } from './chat/tools';
 export { useChatSession } from './chat/useChatSession';
 export type {
   UseChatSessionOptions,
