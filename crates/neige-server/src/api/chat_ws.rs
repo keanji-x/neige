@@ -23,14 +23,18 @@
 //!
 //! ### Server → client
 //!
-//! - **Replay / live events**: each is a NeigeEvent JSON, sent as-is. The
-//!   discriminator is the event's own `"type"` field (`session_init`,
-//!   `assistant_text_delta`, etc).
+//! - **Replay / live events**: a seq envelope wrapping the NeigeEvent:
+//!   ```json
+//!   {"seq":<u64>,"event":<NeigeEvent>}
+//!   ```
+//!   The seq is monotonic over the session and is what the client echoes
+//!   back as `last_seq` on a reattach. The wrapped event is the same JSON
+//!   the daemon emitted on stdout (`session_init`, `assistant_text_delta`,
+//!   etc — discriminated by its own `"type"` field).
 //!
 //! - **Control envelope** (only one shape): `{"type":"hello","last_seq":<n>}`
-//!   sent once after replay. Distinguishable from NeigeEvents because
-//!   NeigeEvents always include a `session_id` field; the hello envelope
-//!   does not.
+//!   sent once after replay. Distinguishable from event envelopes because
+//!   event envelopes carry `seq` + `event`; hello carries `type:"hello"`.
 //!
 //! Snapshot priming: a brand-new client attaches with `last_seq: null` and
 //! receives every buffered event in order, then `hello`. Re-attaching
@@ -64,6 +68,13 @@ enum WsClientMsg {
     Attach { last_seq: Option<u64> },
     /// User turn — daemon will wrap and forward to claude stdin.
     UserMessage { content: String },
+}
+
+/// Wrap a pre-serialized NeigeEvent JSON in `{"seq":N,"event":<json>}`.
+/// String-formatted rather than going through serde_json::Value so we don't
+/// re-parse every event on the broadcast hot path.
+fn seq_envelope(seq: u64, event_json: &str) -> String {
+    format!(r#"{{"seq":{seq},"event":{event_json}}}"#)
 }
 
 pub(super) async fn chat_ws_handler(
@@ -138,16 +149,24 @@ async fn handle_ws(
     let baseline_seq = match attach_result {
         AttachResult::UpToDate { latest_seq } => latest_seq,
         AttachResult::Delta { events, latest_seq } => {
-            for (_, json) in events {
-                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+            for (seq, json) in events {
+                if ws_tx
+                    .send(Message::Text(seq_envelope(seq, &json).into()))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
             latest_seq
         }
         AttachResult::Snapshot { events, latest_seq } => {
-            for json in events {
-                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+            for (seq, json) in events {
+                if ws_tx
+                    .send(Message::Text(seq_envelope(seq, &json).into()))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -155,9 +174,9 @@ async fn handle_ws(
         }
     };
 
-    // Hello tells the client what seq to treat as its new baseline. NeigeEvent
-    // JSON always carries a `session_id`; the hello envelope deliberately
-    // doesn't, so the frontend can branch on shape.
+    // Hello tells the client what seq to treat as its new baseline. Event
+    // envelopes carry a `seq` + `event` pair; the hello envelope uses
+    // `type:"hello"` so the frontend can branch on shape.
     let hello = serde_json::json!({ "type": "hello", "last_seq": baseline_seq });
     if ws_tx
         .send(Message::Text(hello.to_string().into()))
@@ -167,12 +186,18 @@ async fn handle_ws(
         return;
     }
 
-    // Live forwarding: every incoming (seq, json) → one Text frame.
+    // Live forwarding: every incoming (seq, json) → one Text frame, wrapped
+    // in the same seq envelope so the client can keep its lastSeq fresh and
+    // request a Delta on reconnect.
     let send_task = tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok((_seq, json)) => {
-                    if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                Ok((seq, json)) => {
+                    if ws_tx
+                        .send(Message::Text(seq_envelope(seq, &json).into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -206,4 +231,22 @@ async fn handle_ws(
     handle_inbound.await;
 
     send_task.abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seq_envelope_parses_round_trip() {
+        // Sanity-check the string-formatted envelope: it must be valid JSON
+        // with seq + the original event nested intact under `event`.
+        let inner = r#"{"type":"assistant_text_delta","session_id":"abc","text":"hi"}"#;
+        let wrapped = seq_envelope(7, inner);
+        let v: serde_json::Value = serde_json::from_str(&wrapped).unwrap();
+        assert_eq!(v["seq"], 7);
+        assert_eq!(v["event"]["type"], "assistant_text_delta");
+        assert_eq!(v["event"]["session_id"], "abc");
+        assert_eq!(v["event"]["text"], "hi");
+    }
 }

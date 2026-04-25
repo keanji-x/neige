@@ -1,7 +1,7 @@
 // WebSocket-driven event-stream hook for the unified Claude-Code chat surface.
 // Counterpart to useTerminalCore: same status state machine, same debounced
-// reconnect, but the wire payload here is JSON NeigeEvent frames instead of
-// framed PTY bytes.
+// reconnect, but the wire payload here is JSON envelopes instead of framed
+// PTY bytes.
 //
 // Wire contract (mirrors crates/neige-server's chat WS handler):
 //   URL: /ws/<sessionId>/chat (ws: or wss: per page protocol)
@@ -10,9 +10,10 @@
 //     {"type":"user_message","content":"…"}        // when user submits
 //   Server → client text JSON:
 //     {"type":"hello","last_seq":<n>}              // attach ack
-//     <bare NeigeEvent>                            // every other frame
-//   Hello vs NeigeEvent are disambiguated by `session_id` presence: every
-//   NeigeEvent has it, hello does not.
+//     {"seq":<n>,"event":<NeigeEvent>}             // every other frame
+//   Hello vs event envelopes are disambiguated by `type === 'hello'`. Each
+//   live event carries its own seq, so we keep `lastSeqRef` fresh and ask
+//   for a Delta on reconnect instead of always replaying from scratch.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -47,12 +48,23 @@ interface HelloFrame {
   last_seq?: number | null;
 }
 
+interface EventEnvelope {
+  seq: number;
+  event: NeigeEvent;
+}
+
 function isHelloFrame(parsed: unknown): parsed is HelloFrame {
   // Hello is a control envelope. None of the NeigeEvent variants use the
   // `hello` discriminator, so a direct type-tag check is safe and simpler
   // than guarding on field presence.
   if (!parsed || typeof parsed !== 'object') return false;
   return (parsed as { type?: unknown }).type === 'hello';
+}
+
+function isEventEnvelope(parsed: unknown): parsed is EventEnvelope {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const obj = parsed as { seq?: unknown; event?: unknown };
+  return typeof obj.seq === 'number' && !!obj.event && typeof obj.event === 'object';
 }
 
 export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
@@ -62,10 +74,6 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
   const [status, setStatus] = useState<ChatSessionStatus>('closed');
 
   const wsRef = useRef<WebSocket | null>(null);
-  // TODO(seq): the chat WS endpoint may eventually emit explicit per-event
-  // sequence numbers (matching the daemon's framing). For now the backend
-  // sends bare NeigeEvent JSON without seq, so we always reconnect with
-  // last_seq:null (full snapshot). Update once the backend exposes seq.
   const lastSeqRef = useRef<number | null>(null);
 
   // Mirror status into a ref so the WS callbacks can read the latest value
@@ -118,9 +126,10 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
           }
           return;
         }
-        // Anything else is a NeigeEvent (validated implicitly by the consumer).
-        const ev = parsed as NeigeEvent;
-        setEvents((prev) => [...prev, ev]);
+        if (isEventEnvelope(parsed)) {
+          lastSeqRef.current = parsed.seq;
+          setEvents((prev) => [...prev, parsed.event]);
+        }
       };
 
       ws.onerror = () => {
