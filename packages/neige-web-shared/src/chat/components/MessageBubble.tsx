@@ -2,7 +2,9 @@
 // assistant messages render their AssistantBlock stack edge-to-edge so the
 // reader's eye lands on content, not chrome.
 
-import { Box, Card, Flex, Text } from '@radix-ui/themes';
+import { useState } from 'react';
+import { Box, Button, Card, Flex, IconButton, Text, TextArea } from '@radix-ui/themes';
+import { Pencil } from 'lucide-react';
 import type { AssistantBlock, ChatMessage, ToolResultsById } from '../derive';
 import type { ContentBlock } from '../types';
 import { TextBlock } from './TextBlock';
@@ -13,11 +15,22 @@ interface MessageBubbleProps {
   message: ChatMessage;
   toolResults: ToolResultsById;
   respond: (text: string) => void;
+  /**
+   * If true and the message is a user turn, show a pencil that flips the
+   * bubble into an inline edit field. Submit calls respond() with the new
+   * text — i.e. it's resend-as-follow-up, not a history rewrite.
+   */
+  canEdit?: boolean;
 }
 
-export function MessageBubble({ message, toolResults, respond }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  toolResults,
+  respond,
+  canEdit,
+}: MessageBubbleProps) {
   if (message.role === 'user') {
-    return <UserBubble blocks={message.blocks} />;
+    return <UserBubble blocks={message.blocks} canEdit={canEdit} respond={respond} />;
   }
   return (
     <AssistantTurn
@@ -29,7 +42,15 @@ export function MessageBubble({ message, toolResults, respond }: MessageBubblePr
   );
 }
 
-function UserBubble({ blocks }: { blocks: ContentBlock[] }) {
+function UserBubble({
+  blocks,
+  canEdit,
+  respond,
+}: {
+  blocks: ContentBlock[];
+  canEdit?: boolean;
+  respond: (text: string) => void;
+}) {
   const text = blocks
     .map((b) => {
       if (b.type === 'text') return b.text;
@@ -39,20 +60,92 @@ function UserBubble({ blocks }: { blocks: ContentBlock[] }) {
     .filter(Boolean)
     .join('\n\n');
 
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+
+  const onEdit = () => {
+    setDraft(text);
+    setEditing(true);
+  };
+  const onSave = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    respond(trimmed);
+    setEditing(false);
+  };
+  const onCancel = () => setEditing(false);
+
+  if (editing) {
+    return (
+      <Flex justify="end" mb="3">
+        <Box style={{ width: '80%' }}>
+          <TextArea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            size="2"
+            resize="vertical"
+            style={{ minHeight: 80 }}
+            autoFocus
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault();
+                onSave();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onCancel();
+              }
+            }}
+          />
+          <Flex gap="2" justify="end" mt="2">
+            <Button size="1" variant="soft" color="gray" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button size="1" onClick={onSave} disabled={!draft.trim()}>
+              Send edit
+            </Button>
+          </Flex>
+        </Box>
+      </Flex>
+    );
+  }
+
   return (
     <Flex justify="end" mb="3">
-      <Card
-        variant="surface"
-        style={{
-          maxWidth: '80%',
-          background: 'var(--accent-a3)',
-          borderColor: 'var(--accent-a5)',
-        }}
-      >
-        <Text as="div" size="2" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
-          {text}
-        </Text>
-      </Card>
+      <Box style={{ position: 'relative', maxWidth: '80%' }}>
+        {canEdit && (
+          <Box style={{ position: 'absolute', top: -10, right: -10, opacity: 0.7 }}>
+            <IconButton
+              size="1"
+              variant="soft"
+              color="gray"
+              onClick={onEdit}
+              aria-label="Edit message"
+            >
+              <Pencil size={12} />
+            </IconButton>
+          </Box>
+        )}
+        <Card
+          variant="surface"
+          style={{
+            background: 'var(--accent-a3)',
+            borderColor: 'var(--accent-a5)',
+          }}
+        >
+          <Text
+            as="div"
+            size="2"
+            style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55 }}
+          >
+            {text}
+          </Text>
+        </Card>
+      </Box>
     </Flex>
   );
 }

@@ -13,13 +13,23 @@ import { ComposeBox } from './ComposeBox';
 interface ChatViewProps {
   events: NeigeEvent[];
   onSubmit?: (text: string) => void;
+  onStop?: () => void;
+  isGenerating?: boolean;
 }
 
 const STICK_THRESHOLD_PX = 120;
 
-export function ChatView({ events, onSubmit }: ChatViewProps) {
+export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
   const respond = onSubmit ?? (() => {});
+  // Only the most-recent user message is editable; earlier turns belong to the
+  // committed conversation.
+  const lastUserIndex = (() => {
+    for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
+      if (timeline.messages[i].role === 'user') return i;
+    }
+    return -1;
+  })();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -89,7 +99,12 @@ export function ChatView({ events, onSubmit }: ChatViewProps) {
           />
           {timeline.messages.map((m, i) => (
             <Fragment key={m.id}>
-              <MessageBubble message={m} toolResults={toolResults} respond={respond} />
+              <MessageBubble
+                message={m}
+                toolResults={toolResults}
+                respond={respond}
+                canEdit={m.role === 'user' && i === lastUserIndex}
+              />
               <PassthroughGroup
                 entries={timeline.passthroughs}
                 insertedAfterMessageIndex={i}
@@ -113,6 +128,8 @@ export function ChatView({ events, onSubmit }: ChatViewProps) {
           if (onSubmit) onSubmit(text);
           else console.log('[ChatView] submit:', text);
         }}
+        onStop={onStop}
+        isGenerating={isGenerating}
       />
     </Flex>
   );

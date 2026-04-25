@@ -21,6 +21,13 @@
 //!   Forwarded to the daemon as `ClientMsg::ChatUserMessage`. The daemon
 //!   wraps it in the stream-json input envelope and writes to claude stdin.
 //!
+//! - Stop / interrupt the current generation:
+//!   ```json
+//!   {"type":"stop"}
+//!   ```
+//!   Forwarded as `ClientMsg::ChatStop`; daemon delivers SIGINT to the
+//!   claude subprocess.
+//!
 //! ### Server → client
 //!
 //! - **Replay / live events**: a seq envelope wrapping the NeigeEvent:
@@ -68,6 +75,9 @@ enum WsClientMsg {
     Attach { last_seq: Option<u64> },
     /// User turn — daemon will wrap and forward to claude stdin.
     UserMessage { content: String },
+    /// Interrupt the current claude generation. Forwarded as
+    /// `ClientMsg::ChatStop`; daemon SIGINTs the claude subprocess.
+    Stop,
 }
 
 /// Wrap a pre-serialized NeigeEvent JSON in `{"seq":N,"event":<json>}`.
@@ -125,9 +135,9 @@ async fn handle_ws(
     let last_seq: Option<u64> = match ws_rx.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<WsClientMsg>(&text) {
             Ok(WsClientMsg::Attach { last_seq: ls }) => ls,
-            // A leading user_message before attach is a protocol violation;
-            // close politely.
-            Ok(WsClientMsg::UserMessage { .. }) => return,
+            // A leading user_message or stop before attach is a protocol
+            // violation; close politely.
+            Ok(WsClientMsg::UserMessage { .. }) | Ok(WsClientMsg::Stop) => return,
             Err(_) => return,
         },
         Some(Ok(_)) | Some(Err(_)) | None => return,
@@ -217,6 +227,9 @@ async fn handle_ws(
                     Ok(WsClientMsg::UserMessage { content }) => {
                         let _ = sender.send(ClientMsg::ChatUserMessage { content });
                     }
+                    Ok(WsClientMsg::Stop) => {
+                        let _ = sender.send(ClientMsg::ChatStop);
+                    }
                     Ok(WsClientMsg::Attach { .. }) => {
                         // A second attach on a live connection is a no-op.
                     }
@@ -236,6 +249,12 @@ async fn handle_ws(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ws_client_msg_stop_parses() {
+        let parsed: WsClientMsg = serde_json::from_str(r#"{"type":"stop"}"#).unwrap();
+        assert!(matches!(parsed, WsClientMsg::Stop));
+    }
 
     #[test]
     fn seq_envelope_parses_round_trip() {

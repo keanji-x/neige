@@ -5,15 +5,24 @@
 
 import { useState, useRef } from 'react';
 import { Box, Flex, IconButton, TextArea } from '@radix-ui/themes';
-import { Send } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
 
 interface ComposeBoxProps {
   onSubmit: (text: string) => void;
+  /** When set + isGenerating is true, the right-hand button becomes a Stop. */
+  onStop?: () => void;
+  isGenerating?: boolean;
   placeholder?: string;
   disabled?: boolean;
 }
 
-export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps) {
+export function ComposeBox({
+  onSubmit,
+  onStop,
+  isGenerating,
+  placeholder,
+  disabled,
+}: ComposeBoxProps) {
   const [value, setValue] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,14 +70,26 @@ export function ComposeBox({ onSubmit, placeholder, disabled }: ComposeBoxProps)
             style={{ minHeight: 64 }}
           />
         </Box>
-        <IconButton
-          size="3"
-          onClick={submit}
-          disabled={disabled || !value.trim()}
-          aria-label="Send message"
-        >
-          <Send size={16} />
-        </IconButton>
+        {isGenerating && onStop ? (
+          <IconButton
+            size="3"
+            color="red"
+            variant="solid"
+            onClick={onStop}
+            aria-label="Stop generation"
+          >
+            <Square size={14} />
+          </IconButton>
+        ) : (
+          <IconButton
+            size="3"
+            onClick={submit}
+            disabled={disabled || !value.trim()}
+            aria-label="Send message"
+          >
+            <Send size={16} />
+          </IconButton>
+        )}
       </Flex>
     </Box>
   );
