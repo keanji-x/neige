@@ -1,0 +1,156 @@
+// Tool invocation card. One-line summary up top, expand to see full input
+// JSON and (if matched by tool_use_id) the nested tool result.
+
+import { useState } from 'react';
+import { Box, Flex, Text } from '@radix-ui/themes';
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  FilePen,
+  FileSearch,
+  Globe,
+  ListTodo,
+  Terminal,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react';
+import type { ToolResultContent } from '../types';
+import { ToolResultBlock } from './ToolResultBlock';
+
+interface ToolUseBlockProps {
+  name: string;
+  input: unknown;
+  isStreaming: boolean;
+  result?: { content: ToolResultContent; isError: boolean };
+}
+
+const ICONS: Record<string, LucideIcon> = {
+  Read: FileSearch,
+  Glob: FileSearch,
+  Grep: FileSearch,
+  Edit: FilePen,
+  Write: FilePen,
+  NotebookEdit: FilePen,
+  Bash: Terminal,
+  WebFetch: Globe,
+  WebSearch: Globe,
+  Task: Bot,
+  TodoWrite: ListTodo,
+};
+
+function ToolIcon({ name }: { name: string }) {
+  const Icon = ICONS[name] ?? Wrench;
+  return <Icon size={14} style={{ color: 'var(--accent-11)' }} />;
+}
+
+function summarizeInput(name: string, input: unknown): string {
+  if (input == null || typeof input !== 'object') {
+    return typeof input === 'string' ? input : '';
+  }
+  const obj = input as Record<string, unknown>;
+  switch (name) {
+    case 'Read':
+    case 'Glob':
+    case 'NotebookEdit':
+      return String(obj.file_path ?? obj.pattern ?? obj.path ?? '');
+    case 'Grep':
+      return String(obj.pattern ?? '');
+    case 'Bash': {
+      const cmd = String(obj.command ?? '');
+      return cmd.length > 120 ? cmd.slice(0, 117) + '…' : cmd;
+    }
+    case 'Edit':
+    case 'Write':
+      return String(obj.file_path ?? '');
+    case 'WebFetch':
+    case 'WebSearch':
+      return String(obj.url ?? obj.query ?? '');
+    case 'Task':
+      return String(obj.description ?? obj.subagent_type ?? '');
+    case 'TodoWrite': {
+      const todos = obj.todos;
+      if (Array.isArray(todos)) return `${todos.length} item${todos.length === 1 ? '' : 's'}`;
+      return '';
+    }
+    default: {
+      const json = JSON.stringify(input);
+      return json.length > 80 ? json.slice(0, 77) + '…' : json;
+    }
+  }
+}
+
+export function ToolUseBlock({ name, input, isStreaming, result }: ToolUseBlockProps) {
+  const [open, setOpen] = useState(false);
+  const summary = summarizeInput(name, input);
+
+  return (
+    <Box
+      style={{
+        borderRadius: 'var(--radius-3)',
+        border: '1px solid var(--accent-a5)',
+        background: 'var(--accent-a2)',
+        overflow: 'hidden',
+      }}
+    >
+      <Flex
+        align="center"
+        gap="2"
+        px="3"
+        py="2"
+        onClick={() => setOpen((v) => !v)}
+        style={{ cursor: 'pointer', userSelect: 'none' }}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <ToolIcon name={name} />
+        <Text size="2" weight="bold" style={{ color: 'var(--accent-12)' }}>
+          {name}
+        </Text>
+        {summary && (
+          <Text
+            size="1"
+            color="gray"
+            truncate
+            style={{ fontFamily: 'var(--code-font-family)', flex: 1, minWidth: 0 }}
+          >
+            {summary}
+          </Text>
+        )}
+        {isStreaming && (
+          <Text size="1" color="gray" style={{ fontStyle: 'italic' }}>
+            …
+          </Text>
+        )}
+      </Flex>
+      {open && (
+        <Box px="3" pb="3">
+          <Box
+            mt="1"
+            style={{
+              fontFamily: 'var(--code-font-family)',
+              fontSize: '0.78rem',
+              whiteSpace: 'pre-wrap',
+              color: 'var(--gray-12)',
+              background: 'var(--color-panel-solid)',
+              padding: '8px 10px',
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid var(--gray-a4)',
+              maxHeight: 280,
+              overflow: 'auto',
+            }}
+          >
+            {JSON.stringify(input, null, 2)}
+          </Box>
+          {result && (
+            <ToolResultBlock content={result.content} isError={result.isError} />
+          )}
+        </Box>
+      )}
+      {!open && result && (
+        <Box px="3" pb="3" pt="0">
+          <ToolResultBlock content={result.content} isError={result.isError} />
+        </Box>
+      )}
+    </Box>
+  );
+}

@@ -1,33 +1,55 @@
 import { useRef, useState } from 'react'
 
 interface Props {
+  /** When true, render the full-width Stop button instead of the textarea. */
   busy: boolean
+  /** Text the user typed. For terminal mode the parent appends `\r` itself if needed. */
   onSend: (text: string) => void
-  onStop: () => void
+  /** Optional Stop handler. Required when `busy` can become true. */
+  onStop?: () => void
+  /** Placeholder for the textarea. */
+  placeholder?: string
+  /**
+   * Terminal mode: empty input → send `\r`, otherwise append `\r` to the text
+   * before calling `onSend`. Chat mode: send the trimmed text as-is.
+   */
+  variant?: 'terminal' | 'chat'
 }
 
 /**
- * Compose bar:
- *   - Claude running (busy) → full-width red Stop button (sends Esc)
- *   - Otherwise → textarea + Send button. Enter = newline; Send = text + \r.
+ * Compose bar shared by terminal and chat panes:
+ *   - Claude running (busy) → full-width red Stop button (terminal sends Esc)
+ *   - Otherwise → textarea + Send button.
  * Phone keyboards don't have a dedicated "Enter to send" contract, so we route
  * sending through an always-visible button to avoid stray submits.
  */
-export function ComposeBar({ busy, onSend, onStop }: Props) {
+export function ComposeBar({
+  busy,
+  onSend,
+  onStop,
+  placeholder = 'message Claude…',
+  variant = 'terminal',
+}: Props) {
   const [text, setText] = useState('')
   const ref = useRef<HTMLTextAreaElement | null>(null)
 
   const send = () => {
-    if (!text) {
-      onSend('\r')
-      return
+    if (variant === 'terminal') {
+      if (!text) {
+        onSend('\r')
+        return
+      }
+      onSend(text + '\r')
+    } else {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      onSend(trimmed)
     }
-    onSend(text + '\r')
     setText('')
     ref.current?.focus()
   }
 
-  if (busy) {
+  if (busy && onStop) {
     return (
       <div className="compose compose-busy">
         <button className="stop-btn" onClick={onStop}>
@@ -43,7 +65,7 @@ export function ComposeBar({ busy, onSend, onStop }: Props) {
       <textarea
         ref={ref}
         className="compose-input"
-        placeholder="message Claude…"
+        placeholder={placeholder}
         rows={1}
         value={text}
         autoCapitalize="none"

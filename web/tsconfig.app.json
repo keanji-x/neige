@@ -31,5 +31,6 @@
     },
     "ignoreDeprecations": "6.0"
   },
-  "include": ["src", "../packages/neige-web-shared/src/**/*.{ts,tsx}"]
+  "include": ["src", "../packages/neige-web-shared/src/**/*.{ts,tsx}"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

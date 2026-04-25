@@ -1,4 +1,5 @@
 use crate::attach::SessionClient;
+use crate::attach::chat::ChatSessionClient;
 use crate::attach::daemon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,6 +16,16 @@ pub enum Status {
     Dead,
 }
 
+/// How a conversation talks to its daemon. Terminal mode is the existing
+/// PTY/xterm.js path; Chat mode runs the program headless under stream-json.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMode {
+    #[default]
+    Terminal,
+    Chat,
+}
+
 /// Persisted session metadata stored in .neige/sessions/<id>.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -27,6 +38,10 @@ pub struct SessionMeta {
     pub worktree_branch: Option<String>,
     pub created_at: String,
     pub last_active: String,
+    /// Defaults to Terminal so old session files (which lack this field)
+    /// load as the original PTY mode.
+    #[serde(default)]
+    pub mode: SessionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,9 +56,12 @@ pub struct ConvInfo {
     pub created_at: String,
     pub use_worktree: bool,
     pub worktree_branch: Option<String>,
+    pub mode: SessionMode,
 }
 
-/// A single conversation backed by a session-daemon client.
+/// A single conversation backed by a session-daemon client. Exactly one of
+/// `client` (terminal mode) or `chat_client` (chat mode) is populated when
+/// the daemon is live, depending on `mode`.
 pub struct Conversation {
     pub id: Uuid,
     pub title: String,
@@ -53,15 +71,24 @@ pub struct Conversation {
     pub use_worktree: bool,
     pub worktree_branch: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub mode: SessionMode,
     pub client: Option<SessionClient>,
+    pub chat_client: Option<ChatSessionClient>,
 }
 
 impl Conversation {
     pub fn info(&self) -> ConvInfo {
-        let status = match &self.client {
-            Some(c) if c.is_alive() => Status::Running,
-            Some(_) => Status::Dead,
-            None => Status::Detached,
+        let status = match self.mode {
+            SessionMode::Terminal => match &self.client {
+                Some(c) if c.is_alive() => Status::Running,
+                Some(_) => Status::Dead,
+                None => Status::Detached,
+            },
+            SessionMode::Chat => match &self.chat_client {
+                Some(c) if c.is_alive() => Status::Running,
+                Some(_) => Status::Dead,
+                None => Status::Detached,
+            },
         };
         let effective_cwd = if self.use_worktree {
             find_worktree_cwd(&self.id, &self.cwd).unwrap_or_else(|| self.cwd.clone())
@@ -78,6 +105,7 @@ impl Conversation {
             created_at: self.created_at.to_rfc3339(),
             use_worktree: self.use_worktree,
             worktree_branch: self.worktree_branch.clone(),
+            mode: self.mode,
         }
     }
 
@@ -92,6 +120,7 @@ impl Conversation {
             worktree_branch: self.worktree_branch.clone(),
             created_at: self.created_at.to_rfc3339(),
             last_active: chrono::Utc::now().to_rfc3339(),
+            mode: self.mode,
         }
     }
 }
@@ -108,6 +137,10 @@ pub struct CreateConvRequest {
     pub use_worktree: bool,
     #[serde(default)]
     pub worktree_name: Option<String>,
+    /// Defaults to Terminal so existing clients that don't send `mode`
+    /// continue to get a PTY session.
+    #[serde(default)]
+    pub mode: SessionMode,
 }
 
 fn default_program() -> String {
@@ -295,9 +328,10 @@ fn load_sessions(project_cwd: &str) -> Vec<SessionMeta> {
     sessions
 }
 
-/// Ensure a daemon is up for `id` and connect a client to it, rolling back
-/// the daemon spawn if the client connect fails. Reused by `create` and
-/// `resume` so both paths converge on the same cleanup semantics.
+/// Ensure a daemon is up for `id` and connect a terminal client to it,
+/// rolling back the daemon spawn if the client connect fails. Reused by
+/// `create` and `resume` so both paths converge on the same cleanup
+/// semantics.
 async fn spawn_and_connect(
     id: &Uuid,
     command: &str,
@@ -317,6 +351,62 @@ async fn spawn_and_connect(
             Err(e)
         }
     }
+}
+
+/// Same as `spawn_and_connect` but for chat-mode daemons. The argv is passed
+/// to the daemon verbatim (no shell wrapping).
+async fn spawn_and_connect_chat(
+    id: &Uuid,
+    argv: &[String],
+    cwd: &str,
+    env: &[(String, String)],
+) -> Result<ChatSessionClient, String> {
+    let created = daemon::create_chat_session(id, argv, cwd, env).await?;
+    match ChatSessionClient::connect(id).await {
+        Ok(client) => Ok(client),
+        Err(e) => {
+            if created {
+                daemon::kill_session(id).await;
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Build the chat-mode argv for a claude subprocess. The first element is
+/// the binary; the rest are claude flags. `resume` toggles `--resume`
+/// vs `--session-id`.
+fn build_chat_argv(program: &str, session_id: &Uuid, resume: bool) -> Vec<String> {
+    // For now we only know how to drive `claude` headless. If the program is
+    // something else, fall back to splitting it on whitespace and trust the
+    // caller. The MVP only ships the claude path.
+    let bin = if program.is_empty() || program == "claude" || program.starts_with("claude") {
+        "claude".to_string()
+    } else {
+        program.split_whitespace().next().unwrap_or("claude").to_string()
+    };
+    let mut argv = vec![
+        bin,
+        "--print".to_string(),
+        // Claude CLI rejects --print + --output-format=stream-json without
+        // --verbose ("Error: When using --print, --output-format=stream-json
+        // requires --verbose"). Without this flag the subprocess exits 1
+        // immediately, the daemon sees ChildExited, and the socket vanishes
+        // — so user-message frames write into the void.
+        "--verbose".to_string(),
+        "--input-format=stream-json".to_string(),
+        "--output-format=stream-json".to_string(),
+        "--include-partial-messages".to_string(),
+        "--include-hook-events".to_string(),
+    ];
+    if resume {
+        argv.push("--resume".to_string());
+        argv.push(session_id.to_string());
+    } else {
+        argv.push("--session-id".to_string());
+        argv.push(session_id.to_string());
+    }
+    argv
 }
 
 /// Manages all conversations.
@@ -356,7 +446,9 @@ impl ConversationManager {
                 use_worktree: meta.use_worktree,
                 worktree_branch: meta.worktree_branch,
                 created_at,
+                mode: meta.mode,
                 client: None, // detached
+                chat_client: None,
             };
             self.convs.insert(conv.id, conv);
         }
@@ -379,34 +471,48 @@ impl ConversationManager {
                 .unwrap_or("untitled")
                 .to_string()
         } else {
-            req.title
+            req.title.clone()
         };
 
         let is_git = is_git_repo(&cwd);
         let use_worktree = req.use_worktree && is_git;
-
-        let command = build_command(
-            &req.program,
-            &id,
-            use_worktree,
-            is_git,
-            req.worktree_name.as_deref(),
-        );
-        let worktree_branch = if use_worktree && (req.program == "claude" || req.program.starts_with("claude ")) {
-            Some(format!("neige/{}", id))
-        } else {
-            None
-        };
-
         let env = proxy_env(req.proxy.as_deref());
 
-        tracing::info!(
-            "spawning session {id}: command={command:?}, cwd={cwd:?}, is_git={is_git}, use_worktree={use_worktree}"
-        );
-        // Start the per-session daemon (idempotent: reuses a live one if the
-        // socket is reachable) and connect. The daemon owns the PTY so it
-        // outlives neige-server.
-        let client = spawn_and_connect(&id, &command, &cwd, &env).await?;
+        let (client, chat_client, worktree_branch) = match req.mode {
+            SessionMode::Terminal => {
+                let command = build_command(
+                    &req.program,
+                    &id,
+                    use_worktree,
+                    is_git,
+                    req.worktree_name.as_deref(),
+                );
+                let worktree_branch = if use_worktree
+                    && (req.program == "claude" || req.program.starts_with("claude "))
+                {
+                    Some(format!("neige/{}", id))
+                } else {
+                    None
+                };
+                tracing::info!(
+                    "spawning terminal session {id}: command={command:?}, cwd={cwd:?}, is_git={is_git}, use_worktree={use_worktree}"
+                );
+                let client = spawn_and_connect(&id, &command, &cwd, &env).await?;
+                (Some(client), None, worktree_branch)
+            }
+            SessionMode::Chat => {
+                // Worktrees are a Claude CLI feature wired through the
+                // `--worktree` flag, which only makes sense when claude
+                // owns the session. The headless chat path doesn't manage
+                // worktrees yet — we just spawn in `cwd` directly.
+                let argv = build_chat_argv(&req.program, &id, false);
+                tracing::info!(
+                    "spawning chat session {id}: argv={argv:?}, cwd={cwd:?}"
+                );
+                let chat = spawn_and_connect_chat(&id, &argv, &cwd, &env).await?;
+                (None, Some(chat), None)
+            }
+        };
 
         let conv = Conversation {
             id,
@@ -417,7 +523,9 @@ impl ConversationManager {
             use_worktree,
             worktree_branch,
             created_at: chrono::Utc::now(),
-            client: Some(client),
+            mode: req.mode,
+            client,
+            chat_client,
         };
 
         let info = conv.info();
@@ -426,32 +534,48 @@ impl ConversationManager {
         Ok(info)
     }
 
-    /// Resume a detached session by spawning a new PTY with `claude --resume`.
+    /// Resume a detached session by reattaching to its live daemon (or
+    /// spawning a fresh one with a `--resume` command if the daemon's gone).
     pub async fn resume(&mut self, id: &Uuid) -> Result<ConvInfo, String> {
         let conv = self.convs.get_mut(id)
             .ok_or_else(|| "session not found".to_string())?;
 
-        if conv.client.as_ref().is_some_and(|c| c.is_alive()) {
-            return Ok(conv.info());
+        match conv.mode {
+            SessionMode::Terminal => {
+                if conv.client.as_ref().is_some_and(|c| c.is_alive()) {
+                    return Ok(conv.info());
+                }
+
+                let command = build_resume_command(&conv.program, &conv.id);
+                let env = proxy_env(conv.proxy.as_deref());
+
+                // For worktree sessions, find the actual worktree path where
+                // Claude CLI stored the conversation data; fall back to the
+                // saved cwd.
+                let cwd = if conv.use_worktree {
+                    find_worktree_cwd(&conv.id, &conv.cwd).unwrap_or_else(|| conv.cwd.clone())
+                } else {
+                    conv.cwd.clone()
+                };
+
+                // Idempotent: if the daemon from before the neige-server restart is
+                // still alive, create_session short-circuits and `command`/env args
+                // are ignored — the user reattaches to the same live claude. If the
+                // daemon is gone, a fresh one is spawned with the resume command.
+                let client = spawn_and_connect(&conv.id, &command, &cwd, &env).await?;
+                conv.client = Some(client);
+            }
+            SessionMode::Chat => {
+                if conv.chat_client.as_ref().is_some_and(|c| c.is_alive()) {
+                    return Ok(conv.info());
+                }
+                let argv = build_chat_argv(&conv.program, &conv.id, true);
+                let env = proxy_env(conv.proxy.as_deref());
+                let cwd = conv.cwd.clone();
+                let chat = spawn_and_connect_chat(&conv.id, &argv, &cwd, &env).await?;
+                conv.chat_client = Some(chat);
+            }
         }
-
-        let command = build_resume_command(&conv.program, &conv.id);
-        let env = proxy_env(conv.proxy.as_deref());
-
-        // For worktree sessions, find the actual worktree path where Claude CLI
-        // stored the conversation data; fall back to the saved cwd.
-        let cwd = if conv.use_worktree {
-            find_worktree_cwd(&conv.id, &conv.cwd).unwrap_or_else(|| conv.cwd.clone())
-        } else {
-            conv.cwd.clone()
-        };
-
-        // Idempotent: if the daemon from before the neige-server restart is
-        // still alive, create_session short-circuits and `command`/env args
-        // are ignored — the user reattaches to the same live claude. If the
-        // daemon is gone, a fresh one is spawned with the resume command.
-        let client = spawn_and_connect(&conv.id, &command, &cwd, &env).await?;
-        conv.client = Some(client);
 
         save_session(&conv.meta(), &self.project_cwd);
         Ok(conv.info())
@@ -492,4 +616,121 @@ pub type SharedManager = Arc<Mutex<ConversationManager>>;
 
 pub fn new_shared_manager(project_cwd: &str) -> SharedManager {
     Arc::new(Mutex::new(ConversationManager::new(project_cwd)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_mode_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&SessionMode::Terminal).unwrap(), "\"terminal\"");
+        assert_eq!(serde_json::to_string(&SessionMode::Chat).unwrap(), "\"chat\"");
+    }
+
+    #[test]
+    fn session_mode_round_trip() {
+        for m in [SessionMode::Terminal, SessionMode::Chat] {
+            let s = serde_json::to_string(&m).unwrap();
+            let parsed: SessionMode = serde_json::from_str(&s).unwrap();
+            assert_eq!(parsed, m);
+        }
+    }
+
+    #[test]
+    fn session_mode_default_is_terminal() {
+        assert_eq!(SessionMode::default(), SessionMode::Terminal);
+    }
+
+    #[test]
+    fn legacy_session_meta_loads_as_terminal() {
+        // Old session files written before the `mode` field existed must
+        // still deserialize, defaulting to Terminal.
+        let legacy = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "old",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+            "worktree_branch": null,
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_active": "2024-01-01T00:00:00Z",
+        });
+        let meta: SessionMeta = serde_json::from_value(legacy).unwrap();
+        assert_eq!(meta.mode, SessionMode::Terminal);
+    }
+
+    #[test]
+    fn create_conv_request_default_mode_is_terminal() {
+        let body = serde_json::json!({
+            "title": "x",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+        });
+        let req: CreateConvRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(req.mode, SessionMode::Terminal);
+    }
+
+    #[test]
+    fn create_conv_request_accepts_chat_mode() {
+        let body = serde_json::json!({
+            "title": "x",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+            "mode": "chat",
+        });
+        let req: CreateConvRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(req.mode, SessionMode::Chat);
+    }
+
+    #[test]
+    fn build_chat_argv_fresh_uses_session_id() {
+        let id = Uuid::nil();
+        let argv = build_chat_argv("claude", &id, false);
+        assert_eq!(argv[0], "claude");
+        assert!(argv.iter().any(|a| a == "--print"));
+        assert!(argv.iter().any(|a| a == "--input-format=stream-json"));
+        assert!(argv.iter().any(|a| a == "--output-format=stream-json"));
+        assert!(argv.iter().any(|a| a == "--session-id"));
+        assert!(!argv.iter().any(|a| a == "--resume"));
+    }
+
+    #[test]
+    fn build_chat_argv_resume_uses_resume_flag() {
+        let id = Uuid::nil();
+        let argv = build_chat_argv("claude", &id, true);
+        assert!(argv.iter().any(|a| a == "--resume"));
+        assert!(!argv.iter().any(|a| a == "--session-id"));
+    }
+
+    #[test]
+    fn build_chat_argv_includes_verbose() {
+        // Claude CLI rejects `--print --output-format=stream-json` without
+        // `--verbose`. Locking this assertion so a future refactor can't
+        // strip it again — that bug had the daemon spawn claude, claude
+        // exit code 1 instantly, the socket vanish, and the user's chat
+        // turns silently dropped.
+        for resume in [false, true] {
+            let argv = build_chat_argv("claude", &Uuid::nil(), resume);
+            assert!(
+                argv.iter().any(|a| a == "--verbose"),
+                "build_chat_argv must include --verbose (resume={resume}): got {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_chat_argv_includes_partial_messages_and_hook_events() {
+        // Mode B's value prop depends on partial-message deltas (live token
+        // streaming) and hook events (permission-prompt observability). Lock
+        // both flags.
+        let argv = build_chat_argv("claude", &Uuid::nil(), false);
+        assert!(argv.iter().any(|a| a == "--include-partial-messages"));
+        assert!(argv.iter().any(|a| a == "--include-hook-events"));
+    }
 }

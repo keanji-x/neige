@@ -6,6 +6,7 @@
 //! the WS handler's reconnect/replay protocol (seq=0 snapshot, delta replay)
 //! keeps working on top of the same `AttachResult`.
 
+pub mod chat;
 pub mod daemon;
 
 use std::collections::VecDeque;
@@ -175,8 +176,11 @@ impl SessionClient {
                         break;
                     }
                     // A second Hello would only arrive if we re-attached;
-                    // we don't, so treat as noise.
-                    DaemonMsg::Hello { .. } => {}
+                    // we don't, so treat as noise. Chat-mode frames must
+                    // never reach a terminal client — log + skip.
+                    DaemonMsg::Hello { .. }
+                    | DaemonMsg::HelloChat { .. }
+                    | DaemonMsg::ChatEvent { .. } => {}
                 }
             }
             alive_r.store(false, std::sync::atomic::Ordering::Relaxed);

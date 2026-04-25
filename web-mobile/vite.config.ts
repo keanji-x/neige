@@ -14,6 +14,12 @@ export default defineConfig({
     alias: {
       '@neige/shared': path.resolve(__dirname, '../packages/neige-web-shared/src'),
     },
+    // Force a single React identity. The shared package lives in a sibling
+    // directory whose node_modules is a symlink to web-mobile/node_modules;
+    // without dedupe, Vite resolves react via two different paths and bundles
+    // two copies, leaving the dispatcher null in components imported through
+    // @neige/shared (e.g. ToastProvider's useState crashes → black screen).
+    dedupe: ['react', 'react-dom'],
   },
   server: {
     port: 5174,

@@ -10,6 +10,7 @@ import { useTerminal } from '../hooks/useTerminal';
 import { listConversations, loadLayout, saveLayout } from '../api';
 import { FileViewer } from './FileViewer';
 import { WebView } from './WebView';
+import { ChatPanel } from './ChatPanel';
 
 interface TerminalPanelProps {
   dockviewApiRef: React.MutableRefObject<DockviewApi | null>;
@@ -39,10 +40,16 @@ function WebViewComponent({ params }: IDockviewPanelProps<{ url: string }>) {
   return <WebView url={params.url} />;
 }
 
+/** Chat-mode (Mode B) panel — Claude Code in headless stream-json mode */
+function ChatPanelWrapper({ params }: IDockviewPanelProps<{ convId: string }>) {
+  return <ChatPanel sessionId={params.convId} />;
+}
+
 const components = {
   terminal: TerminalComponent,
   fileViewer: FileViewerComponent,
   webView: WebViewComponent,
+  chat: ChatPanelWrapper,
 };
 
 export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: TerminalPanelProps) {

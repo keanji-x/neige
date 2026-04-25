@@ -11,6 +11,80 @@ use axum::routing::{get, post};
 use clap::{Parser, Subcommand};
 use tower_http::services::ServeDir;
 
+/// Decide the Cache-Control header for a given URL path.
+///
+/// Content-hashed `assets/*` chunks are safe to cache forever. Everything
+/// else (index.html, manifest, favicon, API responses) must revalidate so
+/// a fresh deploy doesn't strand the user on a stale index.html that
+/// points at chunks that no longer exist on disk — that's what causes
+/// "blank page after deploy" on iOS Safari.
+fn cache_control_for(path: &str) -> &'static str {
+    if path.contains("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache, must-revalidate"
+    }
+}
+
+async fn cache_control_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    let mut response = next.run(req).await;
+    if let Ok(v) = cache_control_for(&path).parse() {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CACHE_CONTROL, v);
+    }
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_control_for_assets_is_immutable() {
+        assert_eq!(
+            cache_control_for("/assets/index-abc123.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for("/m/assets/index-COnEAKR4.css"),
+            "public, max-age=31536000, immutable"
+        );
+    }
+
+    #[test]
+    fn cache_control_for_html_must_revalidate() {
+        // index.html, manifest, favicon, API responses — all revalidated
+        // so a deploy with new chunk hashes doesn't strand stale clients.
+        for p in [
+            "/",
+            "/m/",
+            "/index.html",
+            "/m/index.html",
+            "/favicon.svg",
+            "/m/manifest.webmanifest",
+            "/api/conversations",
+            "/api/healthz",
+        ] {
+            assert_eq!(cache_control_for(p), "no-cache, must-revalidate", "{p}");
+        }
+    }
+
+    #[test]
+    fn cache_control_assets_anywhere_in_path() {
+        // The substring check is intentional — assets directory may be
+        // nested under any base (web/dist/assets, m/assets, etc).
+        assert_eq!(
+            cache_control_for("/some/nested/assets/foo.css"),
+            "public, max-age=31536000, immutable"
+        );
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "neige-server", about = "Web-based terminal session manager")]
 struct Cli {
@@ -360,6 +434,7 @@ async fn main() {
             auth_cfg.clone(),
             auth::origin_check_middleware,
         ))
+        .layer(axum::middleware::from_fn(cache_control_layer))
         .with_state(state);
 
     let addr = format!("{}:{}", cli.listen, cli.port);

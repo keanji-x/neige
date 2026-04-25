@@ -113,8 +113,20 @@ async fn main() -> anyhow::Result<()> {
                 stdout.write_all(&replay).await?;
                 stdout.flush().await?;
             }
+            DaemonMsg::HelloChat { replay } => {
+                for ev in &replay {
+                    stdout.write_all(ev.as_bytes()).await?;
+                    stdout.write_all(b"\n").await?;
+                }
+                stdout.flush().await?;
+            }
             DaemonMsg::Stdout(b) => {
                 stdout.write_all(&b).await?;
+                stdout.flush().await?;
+            }
+            DaemonMsg::ChatEvent { json } => {
+                stdout.write_all(json.as_bytes()).await?;
+                stdout.write_all(b"\n").await?;
                 stdout.flush().await?;
             }
             DaemonMsg::ChildExited { code } => {

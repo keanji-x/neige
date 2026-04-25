@@ -1,34 +1,53 @@
-//! neige-session-daemon — per-session PTY supervisor.
+//! neige-session-daemon — per-session supervisor.
 //!
-//! Spawns the user's program under a PTY, broadcasts raw PTY output to every
-//! attached client, and keeps a small ring buffer of recent bytes so a
-//! freshly-(re)attaching client can replay them. Survives all client
-//! disconnects; exits when the child does.
+//! Two modes share the same binary, socket, and framing:
 //!
-//! Architecture: the daemon does NO terminal-state parsing. It is a pure
-//! byte pump. Cursor / scrollback / cell-grid interpretation lives on the
-//! client side (xterm.js). This trades a slightly larger reattach payload
-//! (~1 MiB instead of a single-screen snapshot) for never having a
-//! server-side vt100 parser to maintain or hit edge cases on. See discussion
-//! in commit history for the trade-off rationale.
+//! - **Terminal mode** (default): spawn the user's program under a PTY,
+//!   broadcast raw PTY output to every attached client, keep a small ring
+//!   buffer of recent bytes for replay. The daemon does NO terminal-state
+//!   parsing — cursor / scrollback / cell-grid interpretation lives on the
+//!   client side (xterm.js). This trades a slightly larger reattach payload
+//!   (~1 MiB instead of a single-screen snapshot) for never having a
+//!   server-side vt100 parser to maintain or hit edge cases on.
+//!
+//! - **Chat mode** (`--mode chat`): spawn the program with stdio piped (no
+//!   PTY), parse each NDJSON line on stdout via `neige_session::stream_json`,
+//!   and emit one `DaemonMsg::ChatEvent` per produced `NeigeEvent`. Each
+//!   incoming `ClientMsg::ChatUserMessage` is wrapped in the stream-json
+//!   user-message envelope and written to the child's stdin.
+//!
+//! Both modes survive all client disconnects; both exit when the child does.
 
 use std::collections::VecDeque;
 use std::io::Write as _;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
+use neige_session::stream_json::{parse_line, to_neige_events};
 use neige_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum Mode {
+    /// PTY-backed terminal session. Daemon proxies raw bytes both ways.
+    Terminal,
+    /// Headless stream-json child (e.g. `claude --print`). Daemon parses
+    /// stdout as NDJSON and forwards typed events.
+    Chat,
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "neige-session-daemon", about = "Per-session PTY supervisor for neige")]
+#[command(name = "neige-session-daemon", about = "Per-session supervisor for neige")]
 struct Cli {
     /// Session ID. Used for logging and (by convention) socket path.
     #[arg(long)]
@@ -38,17 +57,18 @@ struct Cli {
     #[arg(long)]
     sock: PathBuf,
 
-    /// Replay buffer size in bytes — the rolling window of recent PTY output
-    /// kept so a fresh attach can repaint the screen. Default 1 MiB is enough
-    /// to cover several screenfuls of typical agent CLI output.
+    /// Replay buffer size in bytes. In terminal mode this caps the rolling
+    /// window of recent PTY output. In chat mode it caps the cumulative
+    /// serialized size of buffered NeigeEvent JSON lines.
     #[arg(long, default_value_t = 1024 * 1024)]
     buffer_bytes: usize,
 
     /// Initial PTY columns. First Attach resizes to the real client size.
+    /// Ignored in chat mode.
     #[arg(long, default_value_t = 80)]
     cols: u16,
 
-    /// Initial PTY rows. Same caveat as --cols.
+    /// Initial PTY rows. Ignored in chat mode.
     #[arg(long, default_value_t = 24)]
     rows: u16,
 
@@ -62,19 +82,35 @@ struct Cli {
     #[arg(long)]
     ready_fd: Option<i32>,
 
-    /// Program and args to run under the PTY. Use `--` to separate.
+    /// Session mode. Default is `terminal` (PTY); `chat` runs the child
+    /// headless and parses stream-json on stdout.
+    #[arg(long, value_enum, default_value_t = Mode::Terminal)]
+    mode: Mode,
+
+    /// Program and args to run. Use `--` to separate from daemon flags. In
+    /// chat mode this is typically `claude --print --input-format=stream-json
+    /// --output-format=stream-json --include-partial-messages --session-id <uuid>`.
     #[arg(last = true, required = true)]
     cmd: Vec<String>,
 }
 
-/// Events fanned out to every attached client.
+/// Events fanned out to every attached client in terminal mode.
 #[derive(Clone, Debug)]
 enum Event {
     Output(Vec<u8>),
     Exit(Option<i32>),
 }
 
-/// Rolling byte ring used to seed the Hello replay for a new client.
+/// Events fanned out in chat mode. Each `Event` here is one already-
+/// serialized `NeigeEvent` JSON line.
+#[derive(Clone, Debug)]
+enum ChatEvt {
+    Event(String),
+    Exit(Option<i32>),
+}
+
+/// Rolling byte ring used to seed the Hello replay for a new client in
+/// terminal mode.
 ///
 /// Stored as a deque of chunks (each = one PTY read) so eviction is
 /// chunk-granular — we never split an escape sequence. When `total_bytes`
@@ -116,7 +152,39 @@ impl ByteBuffer {
     }
 }
 
+/// Same chunk-granular eviction strategy as `ByteBuffer`, but each chunk is
+/// one serialized NeigeEvent JSON line. Used in chat mode.
+struct EventBuffer {
+    events: VecDeque<String>,
+    total_bytes: usize,
+    max_bytes: usize,
+}
+
+impl EventBuffer {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            events: VecDeque::new(),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn append(&mut self, json: String) {
+        self.total_bytes += json.len();
+        self.events.push_back(json);
+        while self.total_bytes > self.max_bytes && self.events.len() > 1 {
+            let dropped = self.events.pop_front().unwrap();
+            self.total_bytes -= dropped.len();
+        }
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.events.iter().cloned().collect()
+    }
+}
+
 type SharedBuffer = Arc<Mutex<ByteBuffer>>;
+type SharedEventBuffer = Arc<Mutex<EventBuffer>>;
 type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 
 #[tokio::main]
@@ -129,8 +197,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    tracing::info!(id = %cli.id, cmd = ?cli.cmd, "starting daemon");
+    tracing::info!(id = %cli.id, mode = ?cli.mode, cmd = ?cli.cmd, "starting daemon");
 
+    match cli.mode {
+        Mode::Terminal => run_terminal(cli).await,
+        Mode::Chat => run_chat(cli).await,
+    }
+}
+
+async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     // ---- PTY + child ----
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -177,28 +252,11 @@ async fn main() -> anyhow::Result<()> {
     spawn_child_waiter(child, event_tx.clone(), shutdown_tx);
 
     // ---- Socket ----
-    if let Some(parent) = cli.sock.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    if cli.sock.exists() {
-        // A stale socket from a previous run — safe to remove because no one
-        // else owns this id (caller guarantees uniqueness).
-        std::fs::remove_file(&cli.sock)?;
-    }
-    let listener = UnixListener::bind(&cli.sock)?;
+    let listener = bind_socket(&cli.sock)?;
     tracing::info!(sock = %cli.sock.display(), "listening");
 
     // Tell the parent we're accepting — lets it avoid racing to connect.
-    if let Some(fd) = cli.ready_fd {
-        // SAFETY: fd is owned by us (parent passed it via fork/exec), it's a
-        // writable pipe, and we take exclusive ownership here by not using it
-        // anywhere else in the process.
-        let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
-        let _ = f.write_all(b"ready\n");
-        drop(f);
-    }
+    notify_ready(cli.ready_fd);
 
     // ---- Accept loop ----
     let accept_task = tokio::spawn(accept_loop(
@@ -220,6 +278,91 @@ async fn main() -> anyhow::Result<()> {
 
     let _ = std::fs::remove_file(&cli.sock);
     Ok(())
+}
+
+async fn run_chat(cli: Cli) -> anyhow::Result<()> {
+    // ---- spawn child with piped stdio (no PTY) ----
+    let mut cmd = Command::new(&cli.cmd[0]);
+    cmd.args(&cli.cmd[1..]);
+    if let Some(cwd) = &cli.cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // The daemon survives neige-server restarts, so a dropped Child
+        // handle must not kill the running child.
+        .kill_on_drop(false);
+
+    let mut child = cmd.spawn()?;
+    let child_stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("missing child stdin"))?;
+    let child_stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
+    let child_stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing child stderr"))?;
+
+    let buffer: SharedEventBuffer = Arc::new(Mutex::new(EventBuffer::new(cli.buffer_bytes)));
+    let (event_tx, _) = broadcast::channel::<ChatEvt>(2048);
+    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
+
+    spawn_chat_stdout_reader(child_stdout, buffer.clone(), event_tx.clone());
+    spawn_chat_stderr_reader(child_stderr);
+    spawn_chat_stdin_writer(child_stdin, stdin_rx);
+
+    // ---- child-exit watcher ----
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let event_tx_w = event_tx.clone();
+    tokio::spawn(async move {
+        let status = child.wait().await.ok();
+        let code = status.and_then(|s| s.code());
+        tracing::info!(?code, "chat child wait returned");
+        let _ = event_tx_w.send(ChatEvt::Exit(code));
+        let _ = shutdown_tx.send(());
+    });
+
+    // ---- Socket ----
+    let listener = bind_socket(&cli.sock)?;
+    tracing::info!(sock = %cli.sock.display(), "listening (chat mode)");
+
+    notify_ready(cli.ready_fd);
+
+    let accept_task = tokio::spawn(accept_chat_loop(
+        listener,
+        event_tx.clone(),
+        buffer.clone(),
+        stdin_tx.clone(),
+    ));
+
+    let _ = shutdown_rx.await;
+    tracing::info!("chat child exited, shutting down");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    accept_task.abort();
+
+    let _ = std::fs::remove_file(&cli.sock);
+    Ok(())
+}
+
+fn bind_socket(path: &Path) -> anyhow::Result<UnixListener> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        // A stale socket from a previous run — safe to remove because no one
+        // else owns this id (caller guarantees uniqueness).
+        std::fs::remove_file(path)?;
+    }
+    Ok(UnixListener::bind(path)?)
+}
+
+fn notify_ready(fd: Option<i32>) {
+    if let Some(fd) = fd {
+        // SAFETY: fd is owned by us (parent passed it via fork/exec), it's a
+        // writable pipe, and we take exclusive ownership here by not using it
+        // anywhere else in the process.
+        let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
+        let _ = f.write_all(b"ready\n");
+        drop(f);
+    }
 }
 
 fn spawn_pty_reader(
@@ -278,6 +421,101 @@ fn spawn_child_waiter(
     });
 }
 
+/// Read NDJSON from chat-mode child stdout. Each line gets parsed and any
+/// produced `NeigeEvent`s are serialized, appended to the replay buffer, and
+/// broadcast to all attached clients.
+fn spawn_chat_stdout_reader(
+    stdout: tokio::process::ChildStdout,
+    buffer: SharedEventBuffer,
+    event_tx: broadcast::Sender<ChatEvt>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let raw = match parse_line(&line) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::debug!(error = %e, line = %line, "stream_json parse error");
+                            continue;
+                        }
+                    };
+                    for ev in to_neige_events(raw) {
+                        match serde_json::to_string(&ev) {
+                            Ok(json) => {
+                                if let Ok(mut b) = buffer.lock() {
+                                    b.append(json.clone());
+                                }
+                                let _ = event_tx.send(ChatEvt::Event(json));
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "serialize NeigeEvent failed");
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break, // EOF
+                Err(e) => {
+                    tracing::warn!(error = %e, "chat stdout read error; stopping reader");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Forward chat-mode child stderr to tracing::warn. Don't surface to clients.
+fn spawn_chat_stderr_reader(stderr: tokio::process::ChildStderr) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::warn!(target: "chat_child_stderr", "{line}");
+        }
+    });
+}
+
+/// Take user-message strings from clients, wrap them in the stream-json input
+/// envelope, and write to the child's stdin as one NDJSON line.
+fn spawn_chat_stdin_writer(
+    mut stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) {
+    tokio::spawn(async move {
+        while let Some(content) = rx.recv().await {
+            // Match the Anthropic API user-message shape used by the SDK.
+            // The exact stream-json input wire shape isn't publicly documented;
+            // if Claude rejects this we'll iterate.
+            let envelope = serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": content }
+            });
+            let line = match serde_json::to_string(&envelope) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "encode user envelope failed");
+                    continue;
+                }
+            };
+            if let Err(e) = stdin.write_all(line.as_bytes()).await {
+                tracing::warn!(error = %e, "chat stdin write error; stopping writer");
+                break;
+            }
+            if let Err(e) = stdin.write_all(b"\n").await {
+                tracing::warn!(error = %e, "chat stdin write error; stopping writer");
+                break;
+            }
+            if let Err(e) = stdin.flush().await {
+                tracing::warn!(error = %e, "chat stdin flush error");
+                break;
+            }
+        }
+    });
+}
+
 async fn accept_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<Event>,
@@ -299,6 +537,32 @@ async fn accept_loop(
                         handle_client(sock, event_rx, buffer, master, stdin_tx, killer).await
                     {
                         tracing::debug!(error = %e, "client ended");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "accept failed");
+                break;
+            }
+        }
+    }
+}
+
+async fn accept_chat_loop(
+    listener: UnixListener,
+    event_tx: broadcast::Sender<ChatEvt>,
+    buffer: SharedEventBuffer,
+    stdin_tx: mpsc::UnboundedSender<String>,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((sock, _)) => {
+                let event_rx = event_tx.subscribe();
+                let buffer = buffer.clone();
+                let stdin_tx = stdin_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_chat_client(sock, event_rx, buffer, stdin_tx).await {
+                        tracing::debug!(error = %e, "chat client ended");
                     }
                 });
             }
@@ -384,10 +648,93 @@ async fn handle_client(
                 tracing::info!("client requested Kill; signaling child");
                 kill_child(&master, &killer);
             }
+            ClientMsg::ChatUserMessage { .. } => {
+                // Wrong mode — ignore quietly. Server should never send this
+                // to a terminal-mode daemon.
+                tracing::debug!("ignoring ChatUserMessage in terminal mode");
+            }
         }
     }
 
     // Client's read half closed; drop the sender side so down_task terminates.
+    down_task.abort();
+    let _ = down_task.await;
+    Ok(())
+}
+
+async fn handle_chat_client(
+    sock: UnixStream,
+    mut event_rx: broadcast::Receiver<ChatEvt>,
+    buffer: SharedEventBuffer,
+    stdin_tx: mpsc::UnboundedSender<String>,
+) -> anyhow::Result<()> {
+    let (mut rd, mut wr) = sock.into_split();
+
+    // First frame must be Attach. cols/rows are placeholder in chat mode.
+    let first: ClientMsg = read_frame(&mut rd).await?;
+    match first {
+        ClientMsg::Attach { .. } => {}
+        other => anyhow::bail!("expected Attach as first message, got {other:?}"),
+    }
+
+    let replay = {
+        let b = buffer.lock().unwrap();
+        b.snapshot()
+    };
+    write_frame(&mut wr, &DaemonMsg::HelloChat { replay }).await?;
+
+    let down_task = tokio::spawn(async move {
+        loop {
+            match event_rx.recv().await {
+                Ok(ChatEvt::Event(json)) => {
+                    if write_frame(&mut wr, &DaemonMsg::ChatEvent { json })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(ChatEvt::Exit(code)) => {
+                    let _ = write_frame(&mut wr, &DaemonMsg::ChildExited { code }).await;
+                    break;
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(lagged = n, "chat client lagged; dropping events");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    loop {
+        let msg: ClientMsg = match read_frame(&mut rd).await {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+        match msg {
+            ClientMsg::ChatUserMessage { content } => {
+                if stdin_tx.send(content).is_err() {
+                    break;
+                }
+            }
+            ClientMsg::Attach { .. } => {
+                // Ignore re-attach on a live connection.
+            }
+            ClientMsg::Kill => {
+                tracing::info!("client requested Kill in chat mode");
+                // No PTY to signal; drop the stdin sender to EOF the child.
+                // The child-waiter then broadcasts Exit and we shut down.
+                drop(stdin_tx);
+                break;
+            }
+            // Wrong-mode frames — quietly ignored.
+            ClientMsg::Stdin(_) | ClientMsg::Resize { .. } => {
+                tracing::debug!("ignoring terminal-mode frame in chat mode");
+            }
+        }
+    }
+
     down_task.abort();
     let _ = down_task.await;
     Ok(())

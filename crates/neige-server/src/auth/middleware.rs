@@ -81,7 +81,75 @@ pub async fn auth_middleware(
         )
             .into_response();
     }
-    Redirect::to("/login").into_response()
+    // Preserve original path (with query) so /login can bounce back after
+    // sign-in. Stops the user from being dumped onto the desktop UI when
+    // they originally asked for /m/.
+    Redirect::to(&login_redirect_target(&path, req.uri().query())).into_response()
+}
+
+/// `/login?next=<percent-encoded original path-and-query>`. Pure helper so
+/// the redirect target is testable without spinning up an axum router.
+pub fn login_redirect_target(path: &str, query: Option<&str>) -> String {
+    let original = match query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.to_string(),
+    };
+    let encoded: String = url::form_urlencoded::byte_serialize(original.as_bytes()).collect();
+    format!("/login?next={encoded}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_param_preserves_simple_path() {
+        assert_eq!(login_redirect_target("/m/", None), "/login?next=%2Fm%2F");
+        assert_eq!(login_redirect_target("/", None), "/login?next=%2F");
+    }
+
+    #[test]
+    fn next_param_includes_query() {
+        assert_eq!(
+            login_redirect_target("/api/conversations", Some("limit=10")),
+            "/login?next=%2Fapi%2Fconversations%3Flimit%3D10"
+        );
+    }
+
+    #[test]
+    fn next_param_handles_unicode_and_special_chars() {
+        // Percent-encoded so the next-hop URL parser can't be confused by
+        // an embedded `?` or `&` in the original path.
+        let target = login_redirect_target("/m/foo&bar?x=1", Some("y=2"));
+        assert!(target.starts_with("/login?next="));
+        // Decoding back must yield the original.
+        let next = target.strip_prefix("/login?next=").unwrap();
+        let decoded: String = url::form_urlencoded::parse(format!("k={next}").as_bytes())
+            .next()
+            .unwrap()
+            .1
+            .into_owned();
+        assert_eq!(decoded, "/m/foo&bar?x=1?y=2");
+    }
+
+    #[test]
+    fn next_param_empty_query_doesnt_add_separator() {
+        assert_eq!(
+            login_redirect_target("/m/", Some("")),
+            "/login?next=%2Fm%2F"
+        );
+    }
+
+    #[test]
+    fn is_public_path_covers_login_and_health() {
+        assert!(is_public_path("/login"));
+        assert!(is_public_path("/login/submit"));
+        assert!(is_public_path("/favicon.ico"));
+        assert!(is_public_path("/api/healthz"));
+        assert!(!is_public_path("/api/conversations"));
+        assert!(!is_public_path("/m/"));
+        assert!(!is_public_path("/"));
+    }
 }
 
 pub async fn origin_check_middleware(

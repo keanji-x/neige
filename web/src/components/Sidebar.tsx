@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MessageSquare, Terminal as TerminalIcon } from 'lucide-react';
 import { Button } from '@neige/shared';
 import type { ConvInfo } from '../types';
 import { PortForwardPanel } from './PortForwardPanel';
@@ -183,6 +184,17 @@ export function Sidebar({
       <div className="conv-status-dot-wrapper">
         <span className={`conv-status-dot ${c.status}`} />
       </div>
+      <span
+        className={`conv-mode-icon ${c.mode}`}
+        title={c.mode === 'chat' ? 'Chat (stream-json)' : 'Terminal (PTY)'}
+        aria-label={c.mode}
+      >
+        {c.mode === 'chat' ? (
+          <MessageSquare size={12} strokeWidth={2} />
+        ) : (
+          <TerminalIcon size={12} strokeWidth={2} />
+        )}
+      </span>
       <div className="conv-info">
         <InlineTitle
           value={c.title}

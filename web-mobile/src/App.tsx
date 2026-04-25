@@ -14,6 +14,7 @@ import {
 import { Login } from './components/Login'
 import { Overview } from './components/Overview'
 import { TerminalPane } from './components/TerminalPane'
+import { ChatPane } from './components/ChatPane'
 import { AddSheet } from './components/AddSheet'
 import { CardMenu } from './components/CardMenu'
 
@@ -58,8 +59,9 @@ function App() {
         {stack.cards.map((id) => {
           const conv = byId.get(id)
           if (!conv) return null
+          const Pane = conv.mode === 'chat' ? ChatPane : TerminalPane
           return (
-            <TerminalPane
+            <Pane
               key={id}
               conv={conv}
               active={stack.view === 'card' && id === stack.activeId}

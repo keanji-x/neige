@@ -40,7 +40,7 @@ function App() {
   }, []);
 
   const openTab = useCallback(
-    (id: string, title?: string) => {
+    (id: string, title?: string, modeOverride?: 'terminal' | 'chat') => {
       const api = dockviewApiRef.current;
       if (!api) return;
 
@@ -51,14 +51,19 @@ function App() {
         return;
       }
 
+      const conv = conversations.find((c) => c.id === id);
       // Use provided title, or look up from current conversations
-      const resolvedTitle =
-        title ?? conversations.find((c) => c.id === id)?.title ?? 'untitled';
+      const resolvedTitle = title ?? conv?.title ?? 'untitled';
+      // Chat-mode sessions render a ChatView; everything else uses xterm.
+      // Caller can pass modeOverride to avoid stale-state lookup right after
+      // create() resolves (the conversations array may not have re-rendered yet).
+      const mode = modeOverride ?? conv?.mode ?? 'terminal';
+      const component = mode === 'chat' ? 'chat' : 'terminal';
 
       api.addPanel({
         id,
         title: resolvedTitle,
-        component: 'terminal',
+        component,
         params: { convId: id },
       });
     },
@@ -69,7 +74,7 @@ function App() {
     async (req: CreateConvRequest) => {
       try {
         const conv = await create(req);
-        openTab(conv.id, conv.title);
+        openTab(conv.id, conv.title, conv.mode);
         // Save to recent commands
         const recent = config.recentCommands || [];
         const entry = { program: req.program, cwd: req.cwd, title: req.title, use_worktree: req.use_worktree };

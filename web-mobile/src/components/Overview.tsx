@@ -1,4 +1,5 @@
 import { Badge, Box, Button, Card, Flex, Heading, IconButton, Text } from '@radix-ui/themes'
+import { MessageSquare, Terminal } from 'lucide-react'
 import type { ConvInfo } from '../types'
 import { useCardActivity } from '../cardActivity'
 import { useLongPress } from '../useLongPress'
@@ -12,6 +13,18 @@ interface Props {
   onLongPress: (id: string) => void
   onAdd: () => void
   onLogout: () => void
+}
+
+function ModeIcon({ mode }: { mode: ConvInfo['mode'] }) {
+  const Icon = mode === 'chat' ? MessageSquare : Terminal
+  return (
+    <Icon
+      size={14}
+      strokeWidth={2}
+      style={{ color: 'var(--gray-9)', flex: '0 0 auto' }}
+      aria-label={mode}
+    />
+  )
 }
 
 function shortCwd(cwd: string): string {
@@ -173,6 +186,7 @@ function OverviewCard({
                 flex: '0 0 auto',
               }}
             />
+            <ModeIcon mode={conv.mode} />
             <Text size="3" weight="medium" truncate>{conv.title}</Text>
             {activity.busy && (
               <span
