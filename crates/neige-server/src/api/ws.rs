@@ -209,7 +209,14 @@ async fn process_inbound(
                 }
                 // A second Attach frame is a no-op; client shouldn't send one.
                 Ok(WsClientMsg::Attach { .. }) => {}
-                Err(_) => {}
+                // Anything else is a keystroke. xterm.js's `term.onData`
+                // hands us a string and the frontend forwards it via
+                // `ws.send(string)` which the WebSocket spec encodes as a
+                // Text frame. Without this fallback the typing path is dead.
+                // (Lost in 77f504c when api/mod.rs was split; restored here.)
+                Err(_) => {
+                    let _ = sender.send(ClientMsg::Stdin(text.as_bytes().to_vec()));
+                }
             }
         }
         Message::Binary(data) => {
