@@ -2,11 +2,12 @@
 //!
 //! A client (neige-server, or the standalone test CLI) opens the daemon's
 //! Unix socket, sends `ClientMsg::Attach {cols, rows}` as the first frame,
-//! then reads a `DaemonMsg::Hello { replay }` whose `replay` is the bytes
-//! needed to reproduce the current screen state in a fresh VT (produced by
-//! `vt100::Screen::contents_formatted`). From there it's a duplex stream of
-//! `ClientMsg::Stdin` / `ClientMsg::Resize` upstream and `DaemonMsg::Stdout`
-//! / `DaemonMsg::ChildExited` downstream.
+//! then reads a `DaemonMsg::Hello { replay }` whose `replay` is the recent
+//! window of raw PTY bytes (kept in a server-side ring buffer). The client
+//! feeds those bytes straight into its own VT emulator (e.g. xterm.js) to
+//! repaint the screen. From there it's a duplex stream of `ClientMsg::Stdin`
+//! / `ClientMsg::Resize` upstream and `DaemonMsg::Stdout` /
+//! `DaemonMsg::ChildExited` downstream.
 //!
 //! Framing: length-prefix u32 big-endian + bincode-serde-encoded payload.
 
@@ -34,9 +35,9 @@ pub enum ClientMsg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonMsg {
-    /// Sent once right after `Attach`. `replay` is
-    /// `vt100::Screen::contents_formatted()` — feed it straight into the
-    /// client's terminal and the screen matches the daemon's current grid.
+    /// Sent once right after `Attach`. `replay` is the recent PTY byte
+    /// window kept in the daemon's ring buffer — feed it straight into the
+    /// client's terminal emulator and it reproduces the current screen.
     Hello { replay: Vec<u8> },
     /// Live PTY output, forwarded as it arrives.
     Stdout(Vec<u8>),

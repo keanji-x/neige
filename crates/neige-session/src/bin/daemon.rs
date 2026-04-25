@@ -1,10 +1,18 @@
 //! neige-session-daemon — per-session PTY supervisor.
 //!
-//! Spawns the user's program under a PTY, runs it under a vt100 state machine,
-//! accepts multiple clients over a Unix socket, and broadcasts PTY output to
-//! every attached client. Survives all client disconnects; exits when the
-//! child does.
+//! Spawns the user's program under a PTY, broadcasts raw PTY output to every
+//! attached client, and keeps a small ring buffer of recent bytes so a
+//! freshly-(re)attaching client can replay them. Survives all client
+//! disconnects; exits when the child does.
+//!
+//! Architecture: the daemon does NO terminal-state parsing. It is a pure
+//! byte pump. Cursor / scrollback / cell-grid interpretation lives on the
+//! client side (xterm.js). This trades a slightly larger reattach payload
+//! (~1 MiB instead of a single-screen snapshot) for never having a
+//! server-side vt100 parser to maintain or hit edge cases on. See discussion
+//! in commit history for the trade-off rationale.
 
+use std::collections::VecDeque;
 use std::io::Write as _;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
@@ -30,9 +38,11 @@ struct Cli {
     #[arg(long)]
     sock: PathBuf,
 
-    /// Scrollback buffer size in lines, passed to vt100::Parser.
-    #[arg(long, default_value_t = 10_000)]
-    scrollback: usize,
+    /// Replay buffer size in bytes — the rolling window of recent PTY output
+    /// kept so a fresh attach can repaint the screen. Default 1 MiB is enough
+    /// to cover several screenfuls of typical agent CLI output.
+    #[arg(long, default_value_t = 1024 * 1024)]
+    buffer_bytes: usize,
 
     /// Initial PTY columns. First Attach resizes to the real client size.
     #[arg(long, default_value_t = 80)]
@@ -64,7 +74,49 @@ enum Event {
     Exit(Option<i32>),
 }
 
-type SharedParser = Arc<Mutex<vt100::Parser>>;
+/// Rolling byte ring used to seed the Hello replay for a new client.
+///
+/// Stored as a deque of chunks (each = one PTY read) so eviction is
+/// chunk-granular — we never split an escape sequence. When `total_bytes`
+/// exceeds `max_bytes` we drop chunks from the front, which can lose
+/// older context but keeps memory bounded.
+struct ByteBuffer {
+    chunks: VecDeque<Vec<u8>>,
+    total_bytes: usize,
+    max_bytes: usize,
+}
+
+impl ByteBuffer {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn append(&mut self, bytes: Vec<u8>) {
+        self.total_bytes += bytes.len();
+        self.chunks.push_back(bytes);
+        while self.total_bytes > self.max_bytes && self.chunks.len() > 1 {
+            let dropped = self.chunks.pop_front().unwrap();
+            self.total_bytes -= dropped.len();
+        }
+    }
+
+    /// Concatenated copy of the current buffer — fed straight into the
+    /// `DaemonMsg::Hello { replay }` field. Cheap clone-out is fine here:
+    /// only happens on attach, not in the hot path.
+    fn snapshot(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.total_bytes);
+        for c in &self.chunks {
+            out.extend_from_slice(c);
+        }
+        out
+    }
+}
+
+type SharedBuffer = Arc<Mutex<ByteBuffer>>;
 type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 
 #[tokio::main]
@@ -107,18 +159,14 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
-    let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new(
-        cli.rows,
-        cli.cols,
-        cli.scrollback,
-    )));
+    let buffer: SharedBuffer = Arc::new(Mutex::new(ByteBuffer::new(cli.buffer_bytes)));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
     let (event_tx, _) = broadcast::channel::<Event>(2048);
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    // ---- PTY reader → vt100 + broadcast ----
+    // ---- PTY reader → buffer + broadcast ----
     let reader = master.lock().unwrap().try_clone_reader()?;
-    spawn_pty_reader(reader, parser.clone(), event_tx.clone());
+    spawn_pty_reader(reader, buffer.clone(), event_tx.clone());
 
     // ---- PTY writer ← client stdin ----
     let writer = master.lock().unwrap().take_writer()?;
@@ -156,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     let accept_task = tokio::spawn(accept_loop(
         listener,
         event_tx.clone(),
-        parser.clone(),
+        buffer.clone(),
         master.clone(),
         stdin_tx.clone(),
         killer.clone(),
@@ -176,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn spawn_pty_reader(
     mut reader: Box<dyn std::io::Read + Send>,
-    parser: SharedParser,
+    buffer: SharedBuffer,
     event_tx: broadcast::Sender<Event>,
 ) {
     std::thread::spawn(move || {
@@ -185,11 +233,11 @@ fn spawn_pty_reader(
             match reader.read(&mut buf) {
                 Ok(0) => break, // EOF; child closed stdout — child-waiter will signal exit
                 Ok(n) => {
-                    let bytes = &buf[..n];
-                    if let Ok(mut p) = parser.lock() {
-                        p.process(bytes);
+                    let bytes = buf[..n].to_vec();
+                    if let Ok(mut b) = buffer.lock() {
+                        b.append(bytes.clone());
                     }
-                    let _ = event_tx.send(Event::Output(bytes.to_vec()));
+                    let _ = event_tx.send(Event::Output(bytes));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
@@ -233,7 +281,7 @@ fn spawn_child_waiter(
 async fn accept_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<Event>,
-    parser: SharedParser,
+    buffer: SharedBuffer,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
@@ -242,13 +290,13 @@ async fn accept_loop(
         match listener.accept().await {
             Ok((sock, _)) => {
                 let event_rx = event_tx.subscribe();
-                let parser = parser.clone();
+                let buffer = buffer.clone();
                 let master = master.clone();
                 let stdin_tx = stdin_tx.clone();
                 let killer = killer.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_client(sock, event_rx, parser, master, stdin_tx, killer).await
+                        handle_client(sock, event_rx, buffer, master, stdin_tx, killer).await
                     {
                         tracing::debug!(error = %e, "client ended");
                     }
@@ -265,7 +313,7 @@ async fn accept_loop(
 async fn handle_client(
     sock: UnixStream,
     mut event_rx: broadcast::Receiver<Event>,
-    parser: SharedParser,
+    buffer: SharedBuffer,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
@@ -279,15 +327,15 @@ async fn handle_client(
         other => anyhow::bail!("expected Attach as first message, got {other:?}"),
     };
 
-    // Resize PTY to this client's viewport (latest-attach-wins) and keep the
-    // vt100 parser in sync so the replay we ship below matches.
-    apply_resize(&master, &parser, cols, rows);
+    // Resize PTY to this client's viewport (latest-attach-wins). No parser
+    // state to keep in sync — the snapshot is just the recent byte stream.
+    apply_resize(&master, cols, rows);
 
-    // Snapshot the grid as bytes the client can feed directly into their
-    // terminal to reproduce our current state.
+    // Snapshot the recent PTY bytes; the client will feed them into xterm.js
+    // which interprets them and reproduces the screen state.
     let replay = {
-        let p = parser.lock().unwrap();
-        p.screen().contents_formatted()
+        let b = buffer.lock().unwrap();
+        b.snapshot()
     };
     write_frame(&mut wr, &DaemonMsg::Hello { replay }).await?;
 
@@ -327,7 +375,7 @@ async fn handle_client(
                 }
             }
             ClientMsg::Resize { cols, rows } => {
-                apply_resize(&master, &parser, cols, rows);
+                apply_resize(&master, cols, rows);
             }
             ClientMsg::Attach { .. } => {
                 // Ignore re-attach on a live connection.
@@ -378,24 +426,18 @@ fn kill_child(
     }
 }
 
-fn apply_resize(master: &SharedMaster, parser: &SharedParser, cols: u16, rows: u16) {
+fn apply_resize(master: &SharedMaster, cols: u16, rows: u16) {
     if cols == 0 || rows == 0 {
         return;
     }
-    {
-        let m = master.lock().unwrap();
-        if let Err(e) = m.resize(PtySize {
-            cols,
-            rows,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            tracing::warn!(error = %e, "pty resize failed");
-        }
-    }
-    {
-        let mut p = parser.lock().unwrap();
-        p.screen_mut().set_size(rows, cols);
+    let m = master.lock().unwrap();
+    if let Err(e) = m.resize(PtySize {
+        cols,
+        rows,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        tracing::warn!(error = %e, "pty resize failed");
     }
 }
 
