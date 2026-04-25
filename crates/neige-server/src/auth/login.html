@@ -76,8 +76,17 @@
     }
     status.textContent = '';
     if (r.ok) {
-      history.replaceState(null, '', '/');
-      location.assign('/');
+      // Honor ?next= if the auth middleware preserved the original path,
+      // otherwise pick the right entrypoint by viewport so phone users
+      // don't land on the desktop UI (whose narrow-viewport layout is
+      // broken — sidebar slides off-screen, no toggle button to bring
+      // it back).
+      const params = new URLSearchParams(location.search);
+      const nextParam = params.get('next');
+      const isMobile = window.matchMedia('(max-width: 768px)').matches;
+      const dest = nextParam && nextParam.startsWith('/') ? nextParam : (isMobile ? '/m/' : '/');
+      history.replaceState(null, '', dest);
+      location.assign(dest);
       return true;
     }
     if (r.status === 429) err.textContent = 'Too many attempts. Try again in a minute.';

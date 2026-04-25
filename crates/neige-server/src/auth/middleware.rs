@@ -81,7 +81,16 @@ pub async fn auth_middleware(
         )
             .into_response();
     }
-    Redirect::to("/login").into_response()
+    // Preserve original path (with query) so /login can bounce back after
+    // sign-in. Stops the user from being dumped onto the desktop UI when
+    // they originally asked for /m/.
+    let original = match req.uri().query() {
+        Some(q) => format!("{}?{}", path, q),
+        None => path.clone(),
+    };
+    let encoded: String = url::form_urlencoded::byte_serialize(original.as_bytes()).collect();
+    let dest = format!("/login?next={encoded}");
+    Redirect::to(&dest).into_response()
 }
 
 pub async fn origin_check_middleware(
