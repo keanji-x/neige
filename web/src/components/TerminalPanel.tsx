@@ -138,6 +138,7 @@ export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: 
         components={components}
         onReady={handleReady}
         className="dockview-theme-dark"
+        defaultRenderer="always"
       />
     </div>
   );
