@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 const TRIVIAL: &str = include_str!("fixtures/stream_json/trivial.ndjson");
 const WITH_TOOL_USE: &str = include_str!("fixtures/stream_json/with_tool_use.ndjson");
+const WITH_HOOKS: &str = include_str!("fixtures/stream_json/with_hooks.ndjson");
 
 fn parse_all(ndjson: &str) -> Vec<NeigeEvent> {
     let mut out = Vec::new();
@@ -18,9 +19,9 @@ fn parse_all(ndjson: &str) -> Vec<NeigeEvent> {
         if line.trim().is_empty() {
             continue;
         }
-        let raw =
+        let (raw, original) =
             parse_line(line).unwrap_or_else(|e| panic!("failed to parse line {}: {e}", i + 1));
-        out.extend(to_neige_events(raw));
+        out.extend(to_neige_events(raw, original));
     }
     out
 }
@@ -101,16 +102,145 @@ fn test_parse_tool_use_fixture() {
 
 #[test]
 fn test_unknown_top_level_type_does_not_error() {
+    // Unknown event with no session_id: drops silently (we can't address it).
     let line = r#"{"type":"future_thing","foo":42}"#;
-    let raw = parse_line(line).expect("unknown top-level type must parse, not error");
+    let (raw, original) = parse_line(line).expect("unknown top-level type must parse, not error");
     assert!(
         matches!(raw, RawStreamJsonEvent::Unknown(_)),
         "expected Unknown variant for unknown type, got: {raw:?}"
     );
-    let mapped = to_neige_events(raw);
+    let mapped = to_neige_events(raw, original);
     assert!(
         mapped.is_empty(),
-        "unknown event must produce zero NeigeEvents"
+        "unknown event without session_id must produce zero NeigeEvents"
+    );
+}
+
+#[test]
+fn test_unknown_top_level_type_with_session_id_passthroughs() {
+    // Unknown event WITH session_id: surfaces as a Passthrough so the
+    // frontend can pattern-match on `kind`.
+    let line = r#"{"type":"future_thing","session_id":"11111111-1111-1111-1111-111111111111","foo":42}"#;
+    let (raw, original) = parse_line(line).expect("must parse");
+    assert!(matches!(raw, RawStreamJsonEvent::Unknown(_)));
+    let mapped = to_neige_events(raw, original);
+    assert_eq!(mapped.len(), 1);
+    match &mapped[0] {
+        NeigeEvent::Passthrough {
+            session_id,
+            kind,
+            payload,
+        } => {
+            assert_eq!(session_id.to_string(), "11111111-1111-1111-1111-111111111111");
+            assert_eq!(kind, "future_thing");
+            assert_eq!(payload.get("foo").and_then(|v| v.as_u64()), Some(42));
+        }
+        other => panic!("expected Passthrough, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_hook_events_passthrough_from_fixture() {
+    // The captured fixture contains Pre/Post-ToolUse hook_started +
+    // hook_response pairs. Each one must surface as a Passthrough
+    // tagged `hook.<event_snake>.<phase>`.
+    let events = parse_all(WITH_HOOKS);
+
+    // SessionInit is still emitted from the typed path.
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, NeigeEvent::SessionInit { .. })),
+        "expected SessionInit event from typed path"
+    );
+
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            NeigeEvent::Passthrough { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Exact pairing depends on the captured fixture; we just need
+    // to see at least one started/response of each event.
+    assert!(
+        kinds.contains(&"hook.pre_tool_use.started"),
+        "missing PreToolUse started kind, got: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"hook.pre_tool_use.response"),
+        "missing PreToolUse response kind, got: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"hook.post_tool_use.started"),
+        "missing PostToolUse started kind, got: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"hook.post_tool_use.response"),
+        "missing PostToolUse response kind, got: {kinds:?}"
+    );
+
+    // Payload must be the verbatim JSON, including the verbose
+    // hook_id / output / exit_code fields the frontend renders.
+    let first_response = events
+        .iter()
+        .find(|e| {
+            matches!(e,
+                NeigeEvent::Passthrough { kind, .. } if kind == "hook.pre_tool_use.response")
+        })
+        .expect("at least one hook response");
+    if let NeigeEvent::Passthrough { payload, .. } = first_response {
+        assert_eq!(
+            payload.get("type").and_then(|v| v.as_str()),
+            Some("system")
+        );
+        assert_eq!(
+            payload.get("subtype").and_then(|v| v.as_str()),
+            Some("hook_response")
+        );
+        assert!(payload.get("hook_id").is_some(), "payload missing hook_id");
+        assert!(payload.get("exit_code").is_some(), "payload missing exit_code");
+    }
+}
+
+#[test]
+fn test_hook_event_without_hook_event_field_falls_back() {
+    // Defensive: a future hook subtype without `hook_event` set still
+    // surfaces — we don't want to silently drop it.
+    let line = r#"{"type":"system","subtype":"hook_started","session_id":"11111111-1111-1111-1111-111111111111"}"#;
+    let (raw, original) = parse_line(line).expect("must parse");
+    let mapped = to_neige_events(raw, original);
+    assert_eq!(mapped.len(), 1);
+    match &mapped[0] {
+        NeigeEvent::Passthrough { kind, .. } => {
+            assert_eq!(kind, "hook.started");
+        }
+        other => panic!("expected Passthrough, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_neige_event_wire_shape_passthrough() {
+    // Wire contract: Passthrough is tagged "passthrough" in snake_case
+    // and round-trips losslessly via the JSON-Value form (which is what
+    // the WS layer uses).
+    let payload = serde_json::json!({"type":"system","subtype":"hook_started"});
+    let ev = NeigeEvent::Passthrough {
+        session_id: Uuid::nil(),
+        kind: "hook.pre_tool_use.started".into(),
+        payload: payload.clone(),
+    };
+    let v = serde_json::to_value(&ev).expect("serialize");
+    assert_eq!(v.get("type").and_then(|x| x.as_str()), Some("passthrough"));
+    assert_eq!(
+        v.get("kind").and_then(|x| x.as_str()),
+        Some("hook.pre_tool_use.started")
+    );
+    assert_eq!(v.get("payload"), Some(&payload));
+    assert_eq!(
+        v.get("session_id").and_then(|x| x.as_str()),
+        Some("00000000-0000-0000-0000-000000000000")
     );
 }
 
@@ -177,8 +307,8 @@ fn test_tool_result_content_is_untagged() {
 fn test_unknown_field_in_known_type_does_not_error() {
     // `system / status` event with a bogus extra field tacked on.
     let line = r#"{"type":"system","subtype":"status","status":"requesting","uuid":"00000000-0000-0000-0000-000000000000","session_id":"11111111-1111-1111-1111-111111111111","brand_new_field":{"nested":true}}"#;
-    let raw = parse_line(line).expect("unknown extra field must not break parsing");
-    let mapped = to_neige_events(raw);
+    let (raw, original) = parse_line(line).expect("unknown extra field must not break parsing");
+    let mapped = to_neige_events(raw, original);
     assert_eq!(mapped.len(), 1);
     assert!(matches!(&mapped[0], NeigeEvent::StatusChange { status, .. } if status == "requesting"));
 }

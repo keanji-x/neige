@@ -437,14 +437,14 @@ fn spawn_chat_stdout_reader(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let raw = match parse_line(&line) {
+                    let (raw, original) = match parse_line(&line) {
                         Ok(r) => r,
                         Err(e) => {
                             tracing::debug!(error = %e, line = %line, "stream_json parse error");
                             continue;
                         }
                     };
-                    for ev in to_neige_events(raw) {
+                    for ev in to_neige_events(raw, original) {
                         match serde_json::to_string(&ev) {
                             Ok(json) => {
                                 if let Ok(mut b) = buffer.lock() {

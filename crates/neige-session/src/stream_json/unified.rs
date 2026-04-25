@@ -105,6 +105,27 @@ pub enum NeigeEvent {
         terminal_reason: String,
         permission_denials: Vec<Value>,
     },
+    /// Catch-all envelope for events we don't model with a typed variant.
+    ///
+    /// Hook events (`--include-hook-events`), unknown top-level event types,
+    /// unknown system subtypes, and unknown inner stream-event types all
+    /// flow through here so the frontend can pattern-match on `kind`
+    /// without us having to add a typed variant + serde rename + downstream
+    /// handler for every new wire shape Claude emits.
+    ///
+    /// `kind` carries a stable, snake_case discriminator:
+    ///   - `hook.<event_snake>.<phase>` for `system / hook_started` and
+    ///     `system / hook_response` (e.g. `hook.pre_tool_use.started`,
+    ///     `hook.post_tool_use.response`)
+    ///   - the original top-level `type` string otherwise (e.g.
+    ///     `future_thing`)
+    ///
+    /// `payload` is the original event JSON, verbatim.
+    Passthrough {
+        session_id: Uuid,
+        kind: String,
+        payload: Value,
+    },
 }
 
 /// Content block, whether it's part of an assistant message, a user

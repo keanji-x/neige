@@ -115,6 +115,12 @@ export type NeigeEvent =
       total_cost_usd: number;
       terminal_reason: string;
       permission_denials: unknown[];
+    }
+  | {
+      type: 'passthrough';
+      session_id: string;
+      kind: string;
+      payload: unknown;
     };
 
 export type NeigeEventType = NeigeEvent['type'];

@@ -297,15 +297,34 @@ pub enum ParseError {
     },
 }
 
-/// Parse a single NDJSON line into a [`RawStreamJsonEvent`].
+/// Parse a single NDJSON line into a [`RawStreamJsonEvent`] plus the
+/// original [`Value`].
+///
+/// We hand back both because the unified-event mapper needs the verbatim
+/// JSON to build a [`crate::stream_json::unified::NeigeEvent::Passthrough`]
+/// for events we don't model with a typed variant (hook events, unknown
+/// top-level types, unknown system subtypes, etc). Re-serializing the
+/// typed parse would lose forward-compatibility fields and would also
+/// be lossy for `*::Other` variants which discard their payload.
 ///
 /// Trailing `\r\n` / `\n` are tolerated. Unknown top-level types are
 /// returned as `Unknown` rather than producing an error, so callers can
 /// drive a parser loop without ever panicking on schema drift.
-pub fn parse_line(line: &str) -> Result<RawStreamJsonEvent, ParseError> {
+pub fn parse_line(line: &str) -> Result<(RawStreamJsonEvent, Value), ParseError> {
     let trimmed = line.trim_end_matches(['\r', '\n']);
-    serde_json::from_str(trimmed).map_err(|source| ParseError::Json {
+    let value: Value = serde_json::from_str(trimmed).map_err(|source| ParseError::Json {
         snippet: trimmed.chars().take(200).collect(),
         source,
-    })
+    })?;
+    // Re-route through `serde_json::from_value` rather than reparsing the
+    // string twice. The custom `Deserialize` impl below already handles
+    // the dispatch + Unknown fallback, so this is infallible in practice
+    // (a `Value` always deserializes into RawStreamJsonEvent).
+    let raw = serde_json::from_value::<RawStreamJsonEvent>(value.clone()).map_err(|source| {
+        ParseError::Json {
+            snippet: trimmed.chars().take(200).collect(),
+            source,
+        }
+    })?;
+    Ok((raw, value))
 }

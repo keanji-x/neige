@@ -2,10 +2,11 @@
 // a scrollable bubble feed with a compose box pinned to the bottom.
 // Auto-scrolls to bottom on new content unless the user has scrolled away.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
-import { deriveTimeline } from '../derive';
+import { deriveTimeline, type PassthroughEntry } from '../derive';
 import type { NeigeEvent } from '../types';
+import { DefaultPassthroughCard, lookupRenderer } from '../passthrough';
 import { MessageBubble } from './MessageBubble';
 import { ComposeBox } from './ComposeBox';
 
@@ -81,8 +82,18 @@ export function ChatView({ events, onSubmit }: ChatViewProps) {
               </Text>
             </Flex>
           )}
-          {timeline.messages.map((m) => (
-            <MessageBubble key={m.id} message={m} toolResults={toolResults} />
+          <PassthroughGroup
+            entries={timeline.passthroughs}
+            insertedAfterMessageIndex={null}
+          />
+          {timeline.messages.map((m, i) => (
+            <Fragment key={m.id}>
+              <MessageBubble message={m} toolResults={toolResults} />
+              <PassthroughGroup
+                entries={timeline.passthroughs}
+                insertedAfterMessageIndex={i}
+              />
+            </Fragment>
           ))}
           {timeline.result && (
             <Flex justify="center" py="3">
@@ -103,5 +114,28 @@ export function ChatView({ events, onSubmit }: ChatViewProps) {
         }}
       />
     </Flex>
+  );
+}
+
+function PassthroughGroup({
+  entries,
+  insertedAfterMessageIndex,
+}: {
+  entries: PassthroughEntry[];
+  insertedAfterMessageIndex: number | null;
+}) {
+  const slice = entries.filter(
+    (e) => e.insertedAfterMessageIndex === insertedAfterMessageIndex,
+  );
+  if (slice.length === 0) return null;
+  return (
+    <>
+      {slice.map((entry) => {
+        const Renderer = lookupRenderer(entry.kind) ?? DefaultPassthroughCard;
+        return (
+          <Renderer key={entry.id} kind={entry.kind} payload={entry.payload} />
+        );
+      })}
+    </>
   );
 }

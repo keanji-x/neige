@@ -13,6 +13,14 @@ export {
   ComposeBox,
   mockEvents,
 } from './chat/components';
+export {
+  passthroughRegistry,
+  registerPassthroughRenderer,
+  lookupRenderer,
+  DefaultPassthroughCard,
+  HookEventCard,
+} from './chat/passthrough';
+export type { PassthroughRenderer } from './chat/passthrough';
 export { useChatSession } from './chat/useChatSession';
 export type {
   UseChatSessionOptions,

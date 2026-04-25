@@ -289,6 +289,46 @@ describe('deriveTimeline', () => {
     expect(toolResults['toolu_1'].isError).toBe(false);
   });
 
+  it('routes a passthrough event into timeline.passthroughs anchored to the latest message', () => {
+    const events: NeigeEvent[] = [
+      {
+        type: 'user_message',
+        session_id: '',
+        content: [{ type: 'text', text: 'hi' }],
+      },
+      {
+        type: 'passthrough',
+        session_id: 's',
+        kind: 'hook.pre_tool_use',
+        payload: { tool_name: 'Read', tool_input: { file_path: '/etc/hostname' } },
+      },
+    ];
+    const { timeline } = deriveTimeline(events);
+    expect(timeline.passthroughs).toHaveLength(1);
+    const entry = timeline.passthroughs[0];
+    expect(entry.kind).toBe('hook.pre_tool_use');
+    expect(entry.payload).toEqual({
+      tool_name: 'Read',
+      tool_input: { file_path: '/etc/hostname' },
+    });
+    expect(entry.insertedAfterMessageIndex).toBe(0);
+    expect(entry.id).toMatch(/^passthrough-/);
+  });
+
+  it('passthrough before any message has insertedAfterMessageIndex=null', () => {
+    const events: NeigeEvent[] = [
+      {
+        type: 'passthrough',
+        session_id: 's',
+        kind: 'rate_limit_event',
+        payload: { remaining: 100 },
+      },
+    ];
+    const { timeline } = deriveTimeline(events);
+    expect(timeline.passthroughs).toHaveLength(1);
+    expect(timeline.passthroughs[0].insertedAfterMessageIndex).toBeNull();
+  });
+
   it('records result event', () => {
     const events: NeigeEvent[] = [
       {
