@@ -144,7 +144,7 @@ export function TerminalPanel({ dockviewApiRef, onTabClose, onTabStateChange }: 
       <DockviewReact
         components={components}
         onReady={handleReady}
-        className="dockview-theme-dracula"
+        className="dockview-theme-abyss-spaced"
         defaultRenderer="always"
       />
     </div>
