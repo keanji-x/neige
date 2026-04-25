@@ -64,6 +64,35 @@ pub async fn create_session(
     cwd: &str,
     env: &[(String, String)],
 ) -> Result<bool, String> {
+    spawn_daemon(id, cwd, env, &["--", "/bin/sh", "-c", program]).await
+}
+
+/// Chat-mode variant of `create_session`. The argv is passed verbatim (no
+/// shell wrapping) so daemon spawns the program directly under piped stdio.
+pub async fn create_chat_session(
+    id: &Uuid,
+    argv: &[String],
+    cwd: &str,
+    env: &[(String, String)],
+) -> Result<bool, String> {
+    if argv.is_empty() {
+        return Err("create_chat_session: argv is empty".to_string());
+    }
+    let mut tail: Vec<&str> = vec!["--mode", "chat", "--"];
+    for a in argv {
+        tail.push(a.as_str());
+    }
+    spawn_daemon(id, cwd, env, &tail).await
+}
+
+/// Common spawn path. `tail` is the argv after `--id/--sock/--cwd`, including
+/// the `--mode` flag (in chat mode) and the trailing `-- ... program ...`.
+async fn spawn_daemon(
+    id: &Uuid,
+    cwd: &str,
+    env: &[(String, String)],
+    tail: &[&str],
+) -> Result<bool, String> {
     if is_alive(id).await {
         return Ok(false);
     }
@@ -72,8 +101,6 @@ pub async fn create_session(
     if let Some(parent) = sock.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir sock parent: {e}"))?;
     }
-    // Clear any stale socket file from a previous crashed daemon, so bind
-    // inside the daemon doesn't hit EADDRINUSE.
     if sock.exists() {
         let _ = std::fs::remove_file(&sock);
     }
@@ -83,9 +110,7 @@ pub async fn create_session(
     cmd.args(["--id", &id.to_string()]);
     cmd.args(["--sock", &sock.to_string_lossy()]);
     cmd.args(["--cwd", cwd]);
-    cmd.args(["--", "/bin/sh", "-c", program]);
-    // Pass through the env neige-server normally hands programs. The daemon
-    // forwards its own env to the child CommandBuilder.
+    cmd.args(tail);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     for (k, v) in env {
@@ -94,24 +119,16 @@ pub async fn create_session(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // kill_on_drop defaults to false for tokio::process::Command, which
-        // is what we want — if neige-server drops this handle, the daemon
-        // keeps running so the user's session survives a server restart.
         .kill_on_drop(false);
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
     let daemon_pid = child.id();
     tracing::info!(pid = ?daemon_pid, id = %id, "spawned neige-session-daemon");
 
-    // Reap the daemon if it exits while we're still running. Without this
-    // task the handle gets dropped and we'd leak a zombie (only on the
-    // happy path where neige-server outlives the daemon, which is rare).
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
 
-    // The daemon binds its socket before it starts accepting — poll until
-    // we can connect or the budget runs out. 40ms × 75 = 3s, generous.
     for _ in 0..75 {
         if is_alive(id).await {
             return Ok(true);

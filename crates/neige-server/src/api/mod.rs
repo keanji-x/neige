@@ -6,6 +6,7 @@ use axum::{
 use crate::auth::AuthConfig;
 use crate::conversation::SharedManager;
 
+mod chat_ws;
 mod config;
 mod conversations;
 mod fs;
@@ -53,4 +54,5 @@ pub fn router() -> Router<AppState> {
         .route("/api/layout", post(config::save_layout))
         .route("/api/proxy", get(proxy::proxy_request))
         .route("/ws/{id}", get(ws::ws_handler))
+        .route("/ws/{id}/chat", get(chat_ws::chat_ws_handler))
 }

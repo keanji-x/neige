@@ -33,16 +33,29 @@ pub enum ClientMsg {
     /// child-waiter then broadcasts ChildExited and the daemon shuts
     /// itself down.
     Kill,
+    /// Chat-mode user message. The daemon formats this into a stream-json
+    /// input frame: `{"type":"user","message":{"role":"user","content":"..."}}`
+    /// before writing to the child's stdin. Ignored in terminal mode.
+    ChatUserMessage { content: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonMsg {
-    /// Sent once right after `Attach`. `replay` is the recent PTY byte
-    /// window kept in the daemon's ring buffer — feed it straight into the
-    /// client's terminal emulator and it reproduces the current screen.
+    /// Sent once right after `Attach` in terminal mode. `replay` is the
+    /// recent PTY byte window kept in the daemon's ring buffer — feed it
+    /// straight into the client's terminal emulator and it reproduces the
+    /// current screen.
     Hello { replay: Vec<u8> },
+    /// Sent once right after `Attach` in chat mode. `replay` is a list of
+    /// already-serialized NeigeEvent JSON strings (one per buffered event)
+    /// so a re-attaching client can rebuild conversation state without
+    /// re-running the model.
+    HelloChat { replay: Vec<String> },
     /// Live PTY output, forwarded as it arrives.
     Stdout(Vec<u8>),
+    /// One serialized NeigeEvent JSON line, emitted by the daemon for each
+    /// stream-json line that produced a unified event. Chat mode only.
+    ChatEvent { json: String },
     /// The child program exited. Daemon will shut down right after this.
     ChildExited { code: Option<i32> },
 }
