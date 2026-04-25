@@ -169,7 +169,7 @@ export function ChatPane({ conv, active, onOverview, onPrev, onNext, canCycle }:
         ) : (
           <Box px="3" py="3">
             {timeline.messages.map((m) => (
-              <MessageBubble key={m.id} message={m} toolResults={toolResults} />
+              <MessageBubble key={m.id} message={m} toolResults={toolResults} respond={sendMessage} />
             ))}
             {timeline.result && (
               <Flex justify="center" py="2">

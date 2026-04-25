@@ -19,6 +19,7 @@ const STICK_THRESHOLD_PX = 120;
 
 export function ChatView({ events, onSubmit }: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
+  const respond = onSubmit ?? (() => {});
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -88,7 +89,7 @@ export function ChatView({ events, onSubmit }: ChatViewProps) {
           />
           {timeline.messages.map((m, i) => (
             <Fragment key={m.id}>
-              <MessageBubble message={m} toolResults={toolResults} />
+              <MessageBubble message={m} toolResults={toolResults} respond={respond} />
               <PassthroughGroup
                 entries={timeline.passthroughs}
                 insertedAfterMessageIndex={i}

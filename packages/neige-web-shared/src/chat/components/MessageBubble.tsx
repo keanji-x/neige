@@ -12,9 +12,10 @@ import { ToolUseBlock } from './ToolUseBlock';
 interface MessageBubbleProps {
   message: ChatMessage;
   toolResults: ToolResultsById;
+  respond: (text: string) => void;
 }
 
-export function MessageBubble({ message, toolResults }: MessageBubbleProps) {
+export function MessageBubble({ message, toolResults, respond }: MessageBubbleProps) {
   if (message.role === 'user') {
     return <UserBubble blocks={message.blocks} />;
   }
@@ -23,6 +24,7 @@ export function MessageBubble({ message, toolResults }: MessageBubbleProps) {
       blocks={message.blocks}
       toolResults={toolResults}
       isComplete={message.isComplete}
+      respond={respond}
     />
   );
 }
@@ -59,10 +61,12 @@ function AssistantTurn({
   blocks,
   toolResults,
   isComplete,
+  respond,
 }: {
   blocks: AssistantBlock[];
   toolResults: ToolResultsById;
   isComplete: boolean;
+  respond: (text: string) => void;
 }) {
   return (
     <Box mb="4">
@@ -93,6 +97,7 @@ function AssistantTurn({
                   input={block.input}
                   isStreaming={block.isStreaming}
                   result={toolResults[block.toolUseId]}
+                  respond={respond}
                 />
               );
             case 'unknown':
