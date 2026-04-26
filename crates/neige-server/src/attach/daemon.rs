@@ -76,11 +76,13 @@ pub async fn create_session(
 /// Chat-mode variant of `create_session`.
 ///
 /// `runner_args` is the daemon flag list returned by
-/// `crate::conversation::build_runner_args` — `--runner-path`,
-/// `--session-id`, `--cwd`, optional `--resume`, optional `--mcp-config`,
-/// optional `--program`. The daemon itself spawns `node <runner-path>`
-/// under piped stdio per these flags; we no longer hand it a trailing
-/// `-- claude ...` cmd to exec.
+/// `crate::conversation::build_runner_args` — `--runner-path`, `--cwd`,
+/// optional `--resume`, optional `--mcp-config`, optional `--program`.
+/// The session uuid is delivered to the daemon via the pre-existing
+/// `--id` flag (added by `spawn_daemon`); the daemon then constructs
+/// `--session-id` for the runner internally. The daemon itself spawns
+/// `node <runner-path>` under piped stdio per these flags; we no longer
+/// hand it a trailing `-- claude ...` cmd to exec.
 pub async fn create_chat_session(
     id: &Uuid,
     runner_args: &[String],

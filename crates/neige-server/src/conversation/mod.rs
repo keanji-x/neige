@@ -745,8 +745,14 @@ fn write_mcp_config_file(
 /// owns canUseTool so AskUserQuestion no longer has to be blocked.
 ///
 /// Flag order:
-///   `--runner-path <path> --session-id <id> --cwd <cwd>`
+///   `--runner-path <path> --cwd <cwd>`
 ///   `[--resume] [--mcp-config <path>] [--program <program>]`
+///
+/// The session uuid is NOT in this list — the daemon already receives it
+/// via its own pre-existing `--id` flag (assembled by `spawn_daemon`) and
+/// forwards it to the runner as `--session-id` internally. Adding
+/// `--session-id` here would duplicate the value and trip the daemon's
+/// clap parser, which doesn't define that flag.
 ///
 /// `program` is forwarded as informational metadata (the runner doesn't
 /// shell out — claude is loaded as an SDK module) but kept on the wire so
@@ -754,7 +760,6 @@ fn write_mcp_config_file(
 fn build_runner_args(
     runner_path: &Path,
     program: &str,
-    session_id: &Uuid,
     cwd: &str,
     resume: bool,
     mcp_config_path: Option<&Path>,
@@ -762,8 +767,6 @@ fn build_runner_args(
     let mut args = vec![
         "--runner-path".to_string(),
         runner_path.to_string_lossy().to_string(),
-        "--session-id".to_string(),
-        session_id.to_string(),
         "--cwd".to_string(),
         cwd.to_string(),
     ];
@@ -954,7 +957,6 @@ impl ConversationManager {
                 let runner_args = build_runner_args(
                     &runner_path,
                     &req.program,
-                    &id,
                     &cwd,
                     false,
                     mcp_path.as_deref(),
@@ -1045,7 +1047,6 @@ impl ConversationManager {
                 let runner_args = build_runner_args(
                     &runner_path,
                     &conv.program,
-                    &conv.id,
                     &cwd,
                     true,
                     mcp_path.as_deref(),
@@ -1369,26 +1370,24 @@ mod tests {
     }
 
     #[test]
-    fn build_runner_args_fresh_uses_session_id() {
-        // Fresh sessions get `--session-id`; the absence of `--resume`
-        // is what tells the daemon (and, downstream, the runner SDK) to
-        // start a new conversation rather than reload one from disk.
-        let id = Uuid::nil();
+    fn build_runner_args_fresh_omits_resume() {
+        // Fresh sessions don't carry `--resume` — the daemon (and, downstream,
+        // the runner SDK) starts a new conversation. The session uuid is
+        // delivered separately via the daemon's own `--id` flag (assembled by
+        // `spawn_daemon`), so build_runner_args neither emits nor needs it.
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
-        let args = build_runner_args(&runner, "claude", &id, "/tmp", false, None);
-        assert_eq!(flag_value(&args, "--session-id"), Some(id.to_string().as_str()));
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
         assert!(!args.iter().any(|a| a == "--resume"));
+        // Locked: session-id MUST NOT be in the runner-args list, otherwise
+        // it duplicates the daemon's `--id` and trips the daemon's clap.
+        assert!(!args.iter().any(|a| a == "--session-id"));
     }
 
     #[test]
     fn build_runner_args_resume_uses_resume_flag() {
-        // Resume is a bare boolean flag — the session id (still required
-        // so the daemon can route stdout) sits in --session-id either way.
-        let id = Uuid::nil();
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
-        let args = build_runner_args(&runner, "claude", &id, "/tmp", true, None);
+        let args = build_runner_args(&runner, "claude", "/tmp", true, None);
         assert!(args.iter().any(|a| a == "--resume"));
-        assert_eq!(flag_value(&args, "--session-id"), Some(id.to_string().as_str()));
     }
 
     #[test]
@@ -1398,8 +1397,7 @@ mod tests {
         // in the right place.
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
         let mcp = std::path::PathBuf::from("/tmp/neige-fake-mcp.json");
-        let args =
-            build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, Some(&mcp));
+        let args = build_runner_args(&runner, "claude", "/tmp", false, Some(&mcp));
         assert_eq!(
             flag_value(&args, "--mcp-config"),
             Some("/tmp/neige-fake-mcp.json")
@@ -1411,7 +1409,7 @@ mod tests {
         // None means injection is off (or unit-test scope); the flag must
         // not appear at all so the runner falls back to its default.
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
-        let args = build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, None);
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
         assert!(!args.iter().any(|a| a == "--mcp-config"));
     }
 
@@ -1420,7 +1418,7 @@ mod tests {
         // `--runner-path` is required by the daemon CLI; it tells the
         // daemon which Node entrypoint to spawn.
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
-        let args = build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, None);
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
         assert_eq!(flag_value(&args, "--runner-path"), Some("/opt/neige/runner.js"));
     }
 
@@ -1431,14 +1429,7 @@ mod tests {
         // log it — locking it here so a future refactor doesn't quietly
         // drop it.
         let runner = std::path::PathBuf::from("/opt/neige/runner.js");
-        let args = build_runner_args(
-            &runner,
-            "claude --custom",
-            &Uuid::nil(),
-            "/srv/work",
-            false,
-            None,
-        );
+        let args = build_runner_args(&runner, "claude --custom", "/srv/work", false, None);
         assert_eq!(flag_value(&args, "--cwd"), Some("/srv/work"));
         assert_eq!(flag_value(&args, "--program"), Some("claude --custom"));
     }
