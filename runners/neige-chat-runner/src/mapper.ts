@@ -265,6 +265,13 @@ function mapUser(msg: Record<string, unknown>, sessionId: string): NeigeEvent[] 
   }
   const content = (message as Record<string, unknown>)['content'];
 
+  // SDK puts `parent_tool_use_id` on the SDKUserMessage envelope (the same
+  // level as `message`). When the SDK synthesizes a user turn for a
+  // sub-agent — either the spawn-time prompt or the bundled tool_result
+  // wrapper — this field links the events back to the parent Task. Carry
+  // it through verbatim so derive.ts can bucket sub-agent events.
+  const parentToolUseId = stringField(msg, 'parent_tool_use_id') ?? null;
+
   // String content → real user text message.
   if (typeof content === 'string') {
     return [
@@ -272,6 +279,7 @@ function mapUser(msg: Record<string, unknown>, sessionId: string): NeigeEvent[] 
         type: 'user_message',
         session_id: sessionId,
         content: [{ type: 'text', text: content }],
+        parent_tool_use_id: parentToolUseId,
       },
     ];
   }
@@ -300,6 +308,7 @@ function mapUser(msg: Record<string, unknown>, sessionId: string): NeigeEvent[] 
           tool_use_id: parsed.tool_use_id,
           content: parsed.content,
           is_error: parsed.is_error,
+          parent_tool_use_id: parentToolUseId,
         });
       }
     }
@@ -307,7 +316,14 @@ function mapUser(msg: Record<string, unknown>, sessionId: string): NeigeEvent[] 
   }
 
   const blocks = content.map((b) => parseContentBlock(isObject(b) ? b : {}));
-  return [{ type: 'user_message', session_id: sessionId, content: blocks }];
+  return [
+    {
+      type: 'user_message',
+      session_id: sessionId,
+      content: blocks,
+      parent_tool_use_id: parentToolUseId,
+    },
+  ];
 }
 
 // ---- result ---------------------------------------------------------------

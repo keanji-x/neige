@@ -38,6 +38,12 @@ pub enum NeigeEvent {
     UserMessage {
         session_id: Uuid,
         content: Vec<ContentBlock>,
+        /// `Some(tool_use_id)` when this user turn was synthesized by the
+        /// SDK as the prompt for a sub-agent spawned by a `Task` tool call.
+        /// `None` for top-level user input. Used by the frontend to bucket
+        /// the event into the right (sub-)timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
     },
     AssistantMessageStart {
         session_id: Uuid,
@@ -95,6 +101,12 @@ pub enum NeigeEvent {
         tool_use_id: String,
         content: ToolResultContent,
         is_error: bool,
+        /// `Some(tool_use_id)` when this result completes a tool call that
+        /// happened *inside* a sub-agent (so the result event belongs to
+        /// that sub-agent's timeline, not the parent's). `None` for
+        /// top-level results.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
     },
     Result {
         session_id: Uuid,

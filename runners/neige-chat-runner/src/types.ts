@@ -49,7 +49,21 @@ export type NeigeEvent =
     }
   | { type: 'status_change'; session_id: string; status: string }
   | { type: 'rate_limit'; session_id: string; info: unknown }
-  | { type: 'user_message'; session_id: string; content: ContentBlock[] }
+  | {
+      type: 'user_message';
+      session_id: string;
+      content: ContentBlock[];
+      /**
+       * `string` when this user turn was synthesized by the SDK as the
+       * prompt for a sub-agent spawned by a `Task` tool call; `null` for
+       * top-level user input. The frontend uses it to bucket the event
+       * into the right (sub-)timeline.
+       *
+       * Optional on the wire so older payloads that pre-date this field
+       * still parse — `derive.ts` treats `undefined` as `null`.
+       */
+      parent_tool_use_id?: string | null;
+    }
   | {
       type: 'assistant_message_start';
       session_id: string;
@@ -106,6 +120,14 @@ export type NeigeEvent =
       tool_use_id: string;
       content: ToolResultContent;
       is_error: boolean;
+      /**
+       * `string` when this result completes a tool call that happened
+       * *inside* a sub-agent; `null` for top-level results.
+       *
+       * Optional on the wire so older payloads still parse — `derive.ts`
+       * treats `undefined` as `null`.
+       */
+      parent_tool_use_id?: string | null;
     }
   | {
       type: 'result';
