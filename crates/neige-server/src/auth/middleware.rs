@@ -16,6 +16,18 @@ use crate::auth::token::verify_token;
 
 pub const SESSION_COOKIE: &str = "neige_session";
 
+/// Constant-time equality for two ASCII strings. Wraps `subtle::ConstantTimeEq`
+/// for a `str` API. Length-mismatch short-circuits return false but the
+/// equal-length comparison runs in constant time, which is what matters for
+/// timing oracles on token comparison.
+fn constant_time_eq_str(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
 #[derive(Clone)]
 pub struct AuthConfig {
     pub sessions: Arc<SessionStore>,
@@ -23,6 +35,15 @@ pub struct AuthConfig {
     /// Hashed token; `None` means auth disabled (`--no-auth`).
     pub token_hash: Option<String>,
     pub allowed_origins: Vec<String>,
+    /// Random plaintext token generated at server startup, in-memory only.
+    /// Used for chat-session MCP injection: we write this token into the
+    /// auto-generated `--mcp-config` file so the inner claude can call
+    /// neige's HTTP MCP without us having to plumb the user's plaintext
+    /// token (which we don't have — only its hash).
+    ///
+    /// Always present even in `--no-auth` mode; trivially ignored by the
+    /// middleware in that case.
+    pub internal_token: Arc<String>,
 }
 
 impl AuthConfig {
@@ -68,6 +89,14 @@ pub async fn auth_middleware(
         if let Some(auth_h) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
             if let Some(tok) = auth_h.strip_prefix("Bearer ") {
                 if verify_token(tok, tok_hash) {
+                    return next.run(req).await;
+                }
+                // Internal token is the secret we hand to chat-session MCP
+                // configs. Constant-time compare against the in-memory
+                // plaintext — never logged, never written to disk under our
+                // path (only into .neige/mcp-internal.json under the user's
+                // umask, mode 0600).
+                if constant_time_eq_str(tok, cfg.internal_token.as_str()) {
                     return next.run(req).await;
                 }
             }
@@ -141,6 +170,15 @@ mod tests {
     }
 
     #[test]
+    fn constant_time_eq_str_distinguishes_lengths_and_contents() {
+        assert!(constant_time_eq_str("abc", "abc"));
+        assert!(!constant_time_eq_str("abc", "abd"));
+        assert!(!constant_time_eq_str("abc", "ab"));
+        assert!(!constant_time_eq_str("ab", "abc"));
+        assert!(constant_time_eq_str("", ""));
+    }
+
+    #[test]
     fn is_public_path_covers_login_and_health() {
         assert!(is_public_path("/login"));
         assert!(is_public_path("/login/submit"));
@@ -164,6 +202,15 @@ pub async fn origin_check_middleware(
     let is_state_change = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
 
     if !is_ws && !is_state_change {
+        return next.run(req).await;
+    }
+
+    // MCP clients (Claude Code, Inspector, …) don't send a browser `Origin`
+    // header — they're not browsers and aren't subject to CSRF. The Bearer
+    // token in the `Authorization` header is the actual security boundary
+    // for /mcp, so skip the Origin/Referer check here. auth_middleware
+    // still requires a valid Bearer token.
+    if path == "/mcp" || path.starts_with("/mcp/") {
         return next.run(req).await;
     }
 

@@ -3,8 +3,9 @@
 
 import { registerPassthroughRenderer } from './registry';
 import { HookEventCard } from './HookEventCard';
+import { AskUserQuestionPassthroughCard } from './AskUserQuestionPassthroughCard';
 
-export type { PassthroughRenderer } from './registry';
+export type { PassthroughRenderer, PassthroughRendererProps } from './registry';
 export {
   passthroughRegistry,
   registerPassthroughRenderer,
@@ -12,5 +13,7 @@ export {
 } from './registry';
 export { DefaultPassthroughCard } from './DefaultPassthroughCard';
 export { HookEventCard } from './HookEventCard';
+export { AskUserQuestionPassthroughCard } from './AskUserQuestionPassthroughCard';
 
 registerPassthroughRenderer('hook.', HookEventCard);
+registerPassthroughRenderer('neige.ask_user_question', AskUserQuestionPassthroughCard);

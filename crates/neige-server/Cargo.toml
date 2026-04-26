@@ -28,3 +28,6 @@ url = "2"
 time = "0.3"
 neige-session = { path = "../neige-session" }
 libc = "0.2"
+# Used by the MCP tool registry to derive each tool's input_schema from
+# its argument struct, so the schema and the Args type can never drift.
+schemars = { version = "0.8", features = ["uuid1"] }

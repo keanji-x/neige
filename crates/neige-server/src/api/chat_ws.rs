@@ -63,7 +63,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::AppState;
+use super::{AppState, PendingQuestions};
 use crate::attach::chat::AttachResult;
 use crate::conversation::SharedManager;
 
@@ -78,6 +78,12 @@ enum WsClientMsg {
     /// Interrupt the current claude generation. Forwarded as
     /// `ClientMsg::ChatStop`; daemon SIGINTs the claude subprocess.
     Stop,
+    /// User answered an MCP `ask_question` self-ask dialog. We look up the
+    /// matching oneshot in `pending_questions` and resolve it; the awaiting
+    /// MCP tool call wakes up and returns the answer to its caller.
+    /// Unknown question_id is silently dropped — the dialog might have
+    /// expired (server restart purges the registry).
+    AnswerQuestion { question_id: Uuid, answer: String },
 }
 
 /// Wrap a pre-serialized NeigeEvent JSON in `{"seq":N,"event":<json>}`.
@@ -120,7 +126,8 @@ pub(super) async fn chat_ws_handler(
     drop(mgr_lock);
 
     let mgr_for_ws = mgr.clone();
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, sender, mgr_for_ws, id)))
+    let pending = state.pending_questions.clone();
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, sender, mgr_for_ws, id, pending)))
 }
 
 async fn handle_ws(
@@ -128,6 +135,7 @@ async fn handle_ws(
     sender: UnboundedSender<ClientMsg>,
     mgr: SharedManager,
     id: Uuid,
+    pending: PendingQuestions,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -135,9 +143,10 @@ async fn handle_ws(
     let last_seq: Option<u64> = match ws_rx.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<WsClientMsg>(&text) {
             Ok(WsClientMsg::Attach { last_seq: ls }) => ls,
-            // A leading user_message or stop before attach is a protocol
-            // violation; close politely.
-            Ok(WsClientMsg::UserMessage { .. }) | Ok(WsClientMsg::Stop) => return,
+            // A leading data frame before attach is a protocol violation;
+            // close politely. AnswerQuestion is included so a stale tab
+            // resuming after dialog timeout doesn't get treated as Attach.
+            Ok(_) => return,
             Err(_) => return,
         },
         Some(Ok(_)) | Some(Err(_)) | None => return,
@@ -233,6 +242,23 @@ async fn handle_ws(
                     Ok(WsClientMsg::Attach { .. }) => {
                         // A second attach on a live connection is a no-op.
                     }
+                    Ok(WsClientMsg::AnswerQuestion { question_id, answer }) => {
+                        let mut pending_lock = pending.lock().await;
+                        match pending_lock.remove(&(id, question_id)) {
+                            Some(tx) => {
+                                // Best-effort: receiver may have been dropped
+                                // (tool call timed out or was cancelled).
+                                let _ = tx.send(answer);
+                            }
+                            None => {
+                                tracing::debug!(
+                                    session = %id,
+                                    question_id = %question_id,
+                                    "AnswerQuestion for unknown id (already answered or expired)"
+                                );
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::debug!(error = %e, "unparseable chat ws frame");
                     }
@@ -254,6 +280,26 @@ mod tests {
     fn ws_client_msg_stop_parses() {
         let parsed: WsClientMsg = serde_json::from_str(r#"{"type":"stop"}"#).unwrap();
         assert!(matches!(parsed, WsClientMsg::Stop));
+    }
+
+    #[test]
+    fn ws_client_msg_answer_question_parses() {
+        // Locks the wire shape that the frontend sends for the
+        // ask_user_question dialog. snake_case discriminator + question_id
+        // + answer; if any of these names drift the dialog silently fails.
+        let raw =
+            r#"{"type":"answer_question","question_id":"00000000-0000-0000-0000-000000000001","answer":"yes"}"#;
+        let parsed: WsClientMsg = serde_json::from_str(raw).unwrap();
+        match parsed {
+            WsClientMsg::AnswerQuestion { question_id, answer } => {
+                assert_eq!(
+                    question_id,
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+                );
+                assert_eq!(answer, "yes");
+            }
+            _ => panic!("expected AnswerQuestion variant"),
+        }
     }
 
     #[test]

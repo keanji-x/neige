@@ -205,6 +205,31 @@ impl ChatSessionClient {
         self.alive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Inject a server-synthesized event into the chat history + broadcast.
+    ///
+    /// Used by the MCP `ask_question` self-target flow to surface an
+    /// "ask user a question" prompt to every WS client viewing this
+    /// session, with the same delivery guarantees as a daemon-emitted
+    /// event (gets a seq, lives in history, replays on reattach).
+    ///
+    /// `json` must be a serialized NeigeEvent variant the frontend knows
+    /// how to render — typically a `Passthrough { kind, payload, ... }`.
+    /// We don't validate the shape; the broadcast is a stream of strings.
+    ///
+    /// Returns the assigned seq, or 0 if the history mutex was poisoned
+    /// (extremely unlikely; we still return a value rather than panicking
+    /// because chat clients are long-lived and a poison could cascade).
+    pub fn inject_synthetic_event(&self, json: String) -> u64 {
+        if let Ok(mut h) = self.history.lock() {
+            let seq = h.append(json.clone());
+            let _ = self.tx.send((seq, json));
+            seq
+        } else {
+            tracing::error!("chat history mutex poisoned; synthetic event dropped");
+            0
+        }
+    }
+
     /// Atomically subscribe to live events and prepare the catch-up payload
     /// for a (re)attaching WS client. See `super::SessionClient::attach` for
     /// the rationale on holding the history lock across both operations.
