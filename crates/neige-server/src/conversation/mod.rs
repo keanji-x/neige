@@ -571,9 +571,6 @@ async fn spawn_and_connect_chat(
     }
 }
 
-/// Build the chat-mode argv for a claude subprocess. The first element is
-/// the binary; the rest are claude flags. `resume` toggles `--resume`
-/// vs `--session-id`.
 /// Settings for auto-injecting an `--mcp-config` file into chat sessions.
 ///
 /// Stored on the manager and consulted at create/resume time. `base_url`
@@ -597,6 +594,77 @@ impl McpInjectConfig {
             disabled,
         }
     }
+}
+
+/// Settings for the chat-mode Node runner that the daemon spawns instead of
+/// `claude --print` directly.
+///
+/// Track A's `runners/neige-chat-runner/` is a Node sidecar built on the
+/// official `@anthropic-ai/claude-agent-sdk`. The Rust daemon (Track B)
+/// spawns `node <runner-path> --session-id ... --cwd ... [--resume]
+/// [--mcp-config ...]` and pipes its stdout (NeigeEvent JSON lines) the same
+/// way it used to pipe claude's stream-json output.
+///
+/// `path` is the absolute path to the runner's compiled `cli.js`, computed
+/// once at startup by `resolve_runner_path` and threaded through the
+/// manager so every chat-session create / resume sees the same value.
+#[derive(Clone)]
+pub struct RunnerConfig {
+    pub path: PathBuf,
+}
+
+/// Resolve the path to the chat-runner CLI entrypoint.
+///
+/// Resolution order (first hit wins):
+///   1. `NEIGE_RUNNER_PATH` env var, if set and non-empty.
+///   2. Sibling-of-binary lookup: `<exe-dir>/../../runners/neige-chat-runner/dist/cli.js`,
+///      walking up from `std::env::current_exe()` so packaged builds find
+///      the runner relative to the neige-server binary.
+///   3. Workspace fallback: `runners/neige-chat-runner/dist/cli.js` joined
+///      onto the `cargo` workspace root (parent of `CARGO_MANIFEST_DIR`),
+///      so `cargo run` from a fresh checkout works without env setup.
+///
+/// Returns the resolved path even if the file doesn't exist on disk —
+/// the daemon will surface the spawn failure with a clearer error than this
+/// resolver could ("ENOENT on `node <path>`") so we don't try to be cleverer
+/// here.
+pub fn resolve_runner_path() -> PathBuf {
+    if let Ok(p) = std::env::var("NEIGE_RUNNER_PATH")
+        && !p.is_empty()
+    {
+        return PathBuf::from(p);
+    }
+    // Sibling-of-binary first so installed/packaged setups don't accidentally
+    // resolve to a stale workspace clone hanging around in CARGO_MANIFEST_DIR.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(bin_dir) = exe.parent()
+    {
+        // <bin_dir>/../runners/neige-chat-runner/dist/cli.js — covers
+        // `target/release/` and `target/debug/` siblings of `runners/`.
+        if let Some(workspace_guess) = bin_dir.parent().and_then(|p| p.parent()) {
+            let candidate = workspace_guess
+                .join("runners")
+                .join("neige-chat-runner")
+                .join("dist")
+                .join("cli.js");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    // Workspace fallback — handy in dev where the binary lives in
+    // target/{debug,release}/ and the runner sits at the workspace root.
+    let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
+    let workspace = std::path::Path::new(manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    workspace
+        .join("runners")
+        .join("neige-chat-runner")
+        .join("dist")
+        .join("cli.js")
 }
 
 /// Path of the per-session MCP config file (lives next to session metadata).
@@ -665,57 +733,52 @@ fn write_mcp_config_file(
     Some(path)
 }
 
-fn build_chat_argv(
+/// Build the daemon flag list for a chat-mode session.
+///
+/// Returns the *flags* the `neige-session-daemon --mode chat` invocation
+/// needs (NOT a full argv). The daemon itself spawns `node <runner-path>`
+/// internally per these flags — we no longer hand-roll claude argv on the
+/// server side. The hand-rolled `--print --verbose --input-format=...
+/// --disallowedTools AskUserQuestion` story moved into the runner: the
+/// official `@anthropic-ai/claude-agent-sdk` already handles stream-json
+/// framing, partial messages, and hook events natively, and the runner
+/// owns canUseTool so AskUserQuestion no longer has to be blocked.
+///
+/// Flag order:
+///   `--runner-path <path> --session-id <id> --cwd <cwd>`
+///   `[--resume] [--mcp-config <path>] [--program <program>]`
+///
+/// `program` is forwarded as informational metadata (the runner doesn't
+/// shell out — claude is loaded as an SDK module) but kept on the wire so
+/// the daemon can log it.
+fn build_runner_args(
+    runner_path: &Path,
     program: &str,
     session_id: &Uuid,
+    cwd: &str,
     resume: bool,
     mcp_config_path: Option<&Path>,
 ) -> Vec<String> {
-    // For now we only know how to drive `claude` headless. If the program is
-    // something else, fall back to splitting it on whitespace and trust the
-    // caller. The MVP only ships the claude path.
-    let bin = if program.is_empty() || program == "claude" || program.starts_with("claude") {
-        "claude".to_string()
-    } else {
-        program.split_whitespace().next().unwrap_or("claude").to_string()
-    };
-    let mut argv = vec![
-        bin,
-        "--print".to_string(),
-        // Claude CLI rejects --print + --output-format=stream-json without
-        // --verbose ("Error: When using --print, --output-format=stream-json
-        // requires --verbose"). Without this flag the subprocess exits 1
-        // immediately, the daemon sees ChildExited, and the socket vanishes
-        // — so user-message frames write into the void.
-        "--verbose".to_string(),
-        "--input-format=stream-json".to_string(),
-        "--output-format=stream-json".to_string(),
-        "--include-partial-messages".to_string(),
-        "--include-hook-events".to_string(),
-        // AskUserQuestion is a built-in tool the Claude Code TUI intercepts
-        // via canUseTool to render an interactive picker. In --print mode
-        // there is no canUseTool callback so the harness fallback returns a
-        // 17-char placeholder ("Answer questions?") immediately, which
-        // claude reads as the answer and moves on — the user never sees a
-        // popup. Until we ship a real MCP-based replacement (Wave 5), block
-        // the tool so the model writes questions as markdown instead.
-        "--disallowedTools".to_string(),
-        "AskUserQuestion".to_string(),
+    let mut args = vec![
+        "--runner-path".to_string(),
+        runner_path.to_string_lossy().to_string(),
+        "--session-id".to_string(),
+        session_id.to_string(),
+        "--cwd".to_string(),
+        cwd.to_string(),
     ];
     if resume {
-        argv.push("--resume".to_string());
-        argv.push(session_id.to_string());
-    } else {
-        argv.push("--session-id".to_string());
-        argv.push(session_id.to_string());
+        args.push("--resume".to_string());
     }
-    // --mcp-config is appended last so the path is easy to spot in
-    // process listings and so the existing flags above stay diff-stable.
     if let Some(path) = mcp_config_path {
-        argv.push("--mcp-config".to_string());
-        argv.push(path.to_string_lossy().to_string());
+        args.push("--mcp-config".to_string());
+        args.push(path.to_string_lossy().to_string());
     }
-    argv
+    if !program.is_empty() {
+        args.push("--program".to_string());
+        args.push(program.to_string());
+    }
+    args
 }
 
 /// Manages all conversations.
@@ -733,19 +796,32 @@ pub struct ConversationManager {
     /// (e.g. unit tests that don't need it); otherwise written into a
     /// per-session JSON and passed to claude via `--mcp-config`.
     mcp_inject: Option<McpInjectConfig>,
+    /// Resolved runner CLI path threaded into every chat-session spawn.
+    /// None disables chat creation (resume on a chat session also fails) —
+    /// only relevant in unit tests that never spawn chats.
+    runner: Option<RunnerConfig>,
 }
 
 impl ConversationManager {
     pub fn new(project_cwd: &str) -> Self {
-        Self::with_mcp_inject(project_cwd, None)
+        Self::with_config(project_cwd, None, None)
     }
 
     pub fn with_mcp_inject(project_cwd: &str, mcp_inject: Option<McpInjectConfig>) -> Self {
+        Self::with_config(project_cwd, mcp_inject, None)
+    }
+
+    pub fn with_config(
+        project_cwd: &str,
+        mcp_inject: Option<McpInjectConfig>,
+        runner: Option<RunnerConfig>,
+    ) -> Self {
         let mut mgr = Self {
             convs: HashMap::new(),
             chat_by_name: HashMap::new(),
             project_cwd: project_cwd.to_string(),
             mcp_inject,
+            runner,
         };
         mgr.load_from_disk();
         mgr
@@ -866,11 +942,27 @@ impl ConversationManager {
                     .mcp_inject
                     .as_ref()
                     .and_then(|cfg| write_mcp_config_file(&id, &self.project_cwd, cfg));
-                let argv = build_chat_argv(&req.program, &id, false, mcp_path.as_deref());
-                tracing::info!(
-                    "spawning chat session {id}: argv={argv:?}, cwd={cwd:?}"
+                let runner_path = self
+                    .runner
+                    .as_ref()
+                    .map(|r| r.path.clone())
+                    .ok_or_else(|| {
+                        "chat session requested but no runner path configured \
+                         (set NEIGE_RUNNER_PATH or build runners/neige-chat-runner)"
+                            .to_string()
+                    })?;
+                let runner_args = build_runner_args(
+                    &runner_path,
+                    &req.program,
+                    &id,
+                    &cwd,
+                    false,
+                    mcp_path.as_deref(),
                 );
-                let chat = spawn_and_connect_chat(&id, &argv, &cwd, &env).await?;
+                tracing::info!(
+                    "spawning chat session {id}: runner_args={runner_args:?}, cwd={cwd:?}"
+                );
+                let chat = spawn_and_connect_chat(&id, &runner_args, &cwd, &env).await?;
                 (None, Some(chat), None)
             }
         };
@@ -940,10 +1032,26 @@ impl ConversationManager {
                     .mcp_inject
                     .as_ref()
                     .and_then(|cfg| write_mcp_config_file(&conv.id, &self.project_cwd, cfg));
-                let argv = build_chat_argv(&conv.program, &conv.id, true, mcp_path.as_deref());
-                let env = proxy_env(conv.proxy.as_deref());
+                let runner_path = self
+                    .runner
+                    .as_ref()
+                    .map(|r| r.path.clone())
+                    .ok_or_else(|| {
+                        "chat session resume requested but no runner path configured \
+                         (set NEIGE_RUNNER_PATH or build runners/neige-chat-runner)"
+                            .to_string()
+                    })?;
                 let cwd = conv.cwd.clone();
-                let chat = spawn_and_connect_chat(&conv.id, &argv, &cwd, &env).await?;
+                let runner_args = build_runner_args(
+                    &runner_path,
+                    &conv.program,
+                    &conv.id,
+                    &cwd,
+                    true,
+                    mcp_path.as_deref(),
+                );
+                let env = proxy_env(conv.proxy.as_deref());
+                let chat = spawn_and_connect_chat(&conv.id, &runner_args, &cwd, &env).await?;
                 conv.chat_client = Some(chat);
             }
         }
@@ -1060,6 +1168,18 @@ pub fn new_shared_manager_with_inject(
     Arc::new(Mutex::new(ConversationManager::with_mcp_inject(
         project_cwd,
         mcp_inject,
+    )))
+}
+
+pub fn new_shared_manager_with_config(
+    project_cwd: &str,
+    mcp_inject: Option<McpInjectConfig>,
+    runner: Option<RunnerConfig>,
+) -> SharedManager {
+    Arc::new(Mutex::new(ConversationManager::with_config(
+        project_cwd,
+        mcp_inject,
+        runner,
     )))
 }
 
@@ -1236,93 +1356,91 @@ mod tests {
         assert!(serde_json::from_value::<CreateConvRequest>(body).is_err());
     }
 
-    #[test]
-    fn build_chat_argv_fresh_uses_session_id() {
-        let id = Uuid::nil();
-        let argv = build_chat_argv("claude", &id, false, None);
-        assert_eq!(argv[0], "claude");
-        assert!(argv.iter().any(|a| a == "--print"));
-        assert!(argv.iter().any(|a| a == "--input-format=stream-json"));
-        assert!(argv.iter().any(|a| a == "--output-format=stream-json"));
-        assert!(argv.iter().any(|a| a == "--session-id"));
-        assert!(!argv.iter().any(|a| a == "--resume"));
-    }
-
-    #[test]
-    fn build_chat_argv_resume_uses_resume_flag() {
-        let id = Uuid::nil();
-        let argv = build_chat_argv("claude", &id, true, None);
-        assert!(argv.iter().any(|a| a == "--resume"));
-        assert!(!argv.iter().any(|a| a == "--session-id"));
-    }
-
-    #[test]
-    fn build_chat_argv_includes_verbose() {
-        // Claude CLI rejects `--print --output-format=stream-json` without
-        // `--verbose`. Locking this assertion so a future refactor can't
-        // strip it again — that bug had the daemon spawn claude, claude
-        // exit code 1 instantly, the socket vanish, and the user's chat
-        // turns silently dropped.
-        for resume in [false, true] {
-            let argv = build_chat_argv("claude", &Uuid::nil(), resume, None);
-            assert!(
-                argv.iter().any(|a| a == "--verbose"),
-                "build_chat_argv must include --verbose (resume={resume}): got {argv:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn build_chat_argv_includes_partial_messages_and_hook_events() {
-        // Mode B's value prop depends on partial-message deltas (live token
-        // streaming) and hook events (permission-prompt observability). Lock
-        // both flags.
-        let argv = build_chat_argv("claude", &Uuid::nil(), false, None);
-        assert!(argv.iter().any(|a| a == "--include-partial-messages"));
-        assert!(argv.iter().any(|a| a == "--include-hook-events"));
-    }
-
-    #[test]
-    fn build_chat_argv_disallows_ask_user_question() {
-        // Until we ship an MCP-based AskUser tool, block the built-in so the
-        // model writes questions as text instead of triggering the --print
-        // harness's 17-char placeholder.
-        let argv = build_chat_argv("claude", &Uuid::nil(), false, None);
-        let mut iter = argv.iter();
-        let mut found = false;
+    /// Helper: pluck the value following a flag, asserting the flag is present.
+    /// Returns None if the flag isn't there at all (caller asserts on that).
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let mut iter = args.iter();
         while let Some(a) = iter.next() {
-            if a == "--disallowedTools" {
-                assert_eq!(iter.next().map(|s| s.as_str()), Some("AskUserQuestion"));
-                found = true;
-                break;
+            if a == flag {
+                return iter.next().map(|s| s.as_str());
             }
         }
-        assert!(found, "missing --disallowedTools AskUserQuestion: {argv:?}");
+        None
     }
 
     #[test]
-    fn build_chat_argv_threads_mcp_config_path() {
-        // When a config path is supplied (i.e. mcp_inject was active),
-        // `--mcp-config <path>` must be present and adjacent.
-        let p = std::path::PathBuf::from("/tmp/neige-fake-mcp.json");
-        let argv = build_chat_argv("claude", &Uuid::nil(), false, Some(&p));
-        let mut iter = argv.iter();
-        let mut found = false;
-        while let Some(a) = iter.next() {
-            if a == "--mcp-config" {
-                assert_eq!(iter.next().map(|s| s.as_str()), Some("/tmp/neige-fake-mcp.json"));
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "missing --mcp-config: {argv:?}");
+    fn build_runner_args_fresh_uses_session_id() {
+        // Fresh sessions get `--session-id`; the absence of `--resume`
+        // is what tells the daemon (and, downstream, the runner SDK) to
+        // start a new conversation rather than reload one from disk.
+        let id = Uuid::nil();
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", &id, "/tmp", false, None);
+        assert_eq!(flag_value(&args, "--session-id"), Some(id.to_string().as_str()));
+        assert!(!args.iter().any(|a| a == "--resume"));
     }
 
     #[test]
-    fn build_chat_argv_omits_mcp_config_when_none() {
-        // None means injection is off; --mcp-config must not appear.
-        let argv = build_chat_argv("claude", &Uuid::nil(), false, None);
-        assert!(!argv.iter().any(|a| a == "--mcp-config"));
+    fn build_runner_args_resume_uses_resume_flag() {
+        // Resume is a bare boolean flag — the session id (still required
+        // so the daemon can route stdout) sits in --session-id either way.
+        let id = Uuid::nil();
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", &id, "/tmp", true, None);
+        assert!(args.iter().any(|a| a == "--resume"));
+        assert_eq!(flag_value(&args, "--session-id"), Some(id.to_string().as_str()));
+    }
+
+    #[test]
+    fn build_runner_args_threads_mcp_config_path() {
+        // The runner forwards `--mcp-config` straight to the inner claude
+        // SDK, so the file written by `write_mcp_config_file` still lands
+        // in the right place.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let mcp = std::path::PathBuf::from("/tmp/neige-fake-mcp.json");
+        let args =
+            build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, Some(&mcp));
+        assert_eq!(
+            flag_value(&args, "--mcp-config"),
+            Some("/tmp/neige-fake-mcp.json")
+        );
+    }
+
+    #[test]
+    fn build_runner_args_omits_mcp_config_when_none() {
+        // None means injection is off (or unit-test scope); the flag must
+        // not appear at all so the runner falls back to its default.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, None);
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
+    fn build_runner_args_threads_runner_path() {
+        // `--runner-path` is required by the daemon CLI; it tells the
+        // daemon which Node entrypoint to spawn.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", &Uuid::nil(), "/tmp", false, None);
+        assert_eq!(flag_value(&args, "--runner-path"), Some("/opt/neige/runner.js"));
+    }
+
+    #[test]
+    fn build_runner_args_threads_cwd_and_program() {
+        // cwd is required (runner uses it to set the SDK's working dir).
+        // program is informational but kept on the wire so the daemon can
+        // log it — locking it here so a future refactor doesn't quietly
+        // drop it.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(
+            &runner,
+            "claude --custom",
+            &Uuid::nil(),
+            "/srv/work",
+            false,
+            None,
+        );
+        assert_eq!(flag_value(&args, "--cwd"), Some("/srv/work"));
+        assert_eq!(flag_value(&args, "--program"), Some("claude --custom"));
     }
 
     #[test]

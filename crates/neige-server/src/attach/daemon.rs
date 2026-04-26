@@ -64,32 +64,50 @@ pub async fn create_session(
     cwd: &str,
     env: &[(String, String)],
 ) -> Result<bool, String> {
-    spawn_daemon(id, cwd, env, &["--", "/bin/sh", "-c", program]).await
+    spawn_daemon(
+        id,
+        cwd,
+        env,
+        &["--cwd", cwd, "--", "/bin/sh", "-c", program],
+    )
+    .await
 }
 
-/// Chat-mode variant of `create_session`. The argv is passed verbatim (no
-/// shell wrapping) so daemon spawns the program directly under piped stdio.
+/// Chat-mode variant of `create_session`.
+///
+/// `runner_args` is the daemon flag list returned by
+/// `crate::conversation::build_runner_args` — `--runner-path`,
+/// `--session-id`, `--cwd`, optional `--resume`, optional `--mcp-config`,
+/// optional `--program`. The daemon itself spawns `node <runner-path>`
+/// under piped stdio per these flags; we no longer hand it a trailing
+/// `-- claude ...` cmd to exec.
 pub async fn create_chat_session(
     id: &Uuid,
-    argv: &[String],
+    runner_args: &[String],
     cwd: &str,
     env: &[(String, String)],
 ) -> Result<bool, String> {
-    if argv.is_empty() {
-        return Err("create_chat_session: argv is empty".to_string());
+    if runner_args.is_empty() {
+        return Err("create_chat_session: runner_args is empty".to_string());
     }
-    let mut tail: Vec<&str> = vec!["--mode", "chat", "--"];
-    for a in argv {
+    let mut tail: Vec<&str> = vec!["--mode", "chat"];
+    for a in runner_args {
         tail.push(a.as_str());
     }
     spawn_daemon(id, cwd, env, &tail).await
 }
 
-/// Common spawn path. `tail` is the argv after `--id/--sock/--cwd`, including
-/// the `--mode` flag (in chat mode) and the trailing `-- ... program ...`.
+/// Common spawn path. `tail` is the daemon argv after `--id/--sock`,
+/// including `--mode` (in chat mode), `--cwd <path>`, and any mode-specific
+/// flags (`--runner-path`, `--mcp-config`, `--resume`, `--program` in chat
+/// mode; the trailing `-- /bin/sh -c <cmd>` block in terminal mode). The
+/// chat-mode `--cwd` ships in the runner-args list so it lines up with the
+/// other runner flags in process listings; the terminal-mode `--cwd` ships
+/// in the tail next to the program. Either way, the daemon CLI parses
+/// `--cwd` itself — `spawn_daemon` no longer adds it.
 async fn spawn_daemon(
     id: &Uuid,
-    cwd: &str,
+    _cwd: &str,
     env: &[(String, String)],
     tail: &[&str],
 ) -> Result<bool, String> {
@@ -109,7 +127,6 @@ async fn spawn_daemon(
     let mut cmd = Command::new(&daemon_bin);
     cmd.args(["--id", &id.to_string()]);
     cmd.args(["--sock", &sock.to_string_lossy()]);
-    cmd.args(["--cwd", cwd]);
     cmd.args(tail);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
