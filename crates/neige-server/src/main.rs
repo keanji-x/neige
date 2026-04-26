@@ -2,6 +2,7 @@ mod api;
 mod attach;
 mod auth;
 mod conversation;
+mod mcp;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -115,6 +116,12 @@ struct Cli {
     /// Path to auth file override
     #[arg(long)]
     auth_file: Option<String>,
+
+    /// Disable auto-injection of an `--mcp-config` flag into chat-mode
+    /// claude subprocesses. Default: injected, so the inner claude can call
+    /// neige's HTTP MCP to drive sibling sessions and read its own log.
+    #[arg(long)]
+    no_mcp_inject: bool,
 
     #[command(subcommand)]
     cmd: Option<Command>,
@@ -357,6 +364,13 @@ async fn main() {
         allowed_origins.extend(ts_origins);
     }
 
+    // Internal MCP token, generated fresh on every startup. Used only for
+    // server-spawned chat sessions to dial back into neige's HTTP MCP. Not
+    // persisted (the previous token is invalidated whenever neige-server
+    // restarts — which is fine, sessions get a fresh `--mcp-config` on
+    // resume anyway).
+    let internal_token = Arc::new(auth::generate_token());
+
     // Initialize auth state
     let auth_cfg = if cli.no_auth {
         auth::AuthConfig {
@@ -364,6 +378,7 @@ async fn main() {
             rate_limiter: Arc::new(auth::LoginRateLimiter::new()),
             token_hash: None,
             allowed_origins: allowed_origins.clone(),
+            internal_token: internal_token.clone(),
         }
     } else {
         let path = auth_file_path_from(cli.auth_file.as_deref());
@@ -403,12 +418,19 @@ async fn main() {
             rate_limiter: Arc::new(auth::LoginRateLimiter::new()),
             token_hash: Some(hash),
             allowed_origins,
+            internal_token: internal_token.clone(),
         }
     };
 
+    let mcp_inject = Some(conversation::McpInjectConfig::loopback(
+        cli.port,
+        internal_token.clone(),
+        cli.no_mcp_inject,
+    ));
     let state = api::AppState {
-        manager: conversation::new_shared_manager(&project_cwd),
+        manager: conversation::new_shared_manager_with_inject(&project_cwd, mcp_inject),
         auth: auth_cfg.clone(),
+        pending_questions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     let static_dir = resolve_static_dir(cli.static_dir.as_deref());
@@ -424,6 +446,7 @@ async fn main() {
     let app = Router::new()
         .merge(public)
         .merge(api::router())
+        .merge(mcp::router())
         .nest_service("/m", ServeDir::new(&mobile_static_dir))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(axum::middleware::from_fn_with_state(

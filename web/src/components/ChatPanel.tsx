@@ -16,7 +16,9 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 export function ChatPanel({ sessionId }: ChatPanelProps) {
-  const { events, status, sendMessage, stop, isGenerating } = useChatSession({ sessionId });
+  const { events, status, sendMessage, stop, isGenerating, answerQuestion } = useChatSession({
+    sessionId,
+  });
 
   return (
     <div
@@ -33,6 +35,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         onSubmit={sendMessage}
         onStop={stop}
         isGenerating={isGenerating}
+        onAnswerQuestion={answerQuestion}
       />
       <div className={`chat-status-chip chat-status-${status}`}>
         {STATUS_LABELS[status] ?? status}

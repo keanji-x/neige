@@ -13,7 +13,7 @@ import {
   Text,
   TextField,
 } from '@radix-ui/themes'
-import type { ConvInfo, CreateConvRequest, SessionMode } from '../types'
+import type { ConvInfo, CreateConvRequest, SessionModeTag } from '../types'
 import { getConfig, saveConfig } from '../api'
 import { DirPicker } from './DirPicker'
 
@@ -159,7 +159,7 @@ function NewSessionForm({
   conversations: ConvInfo[]
   onCreate: (req: CreateConvRequest) => Promise<void>
 }) {
-  const [sessionMode, setSessionMode] = useState<SessionMode>('terminal')
+  const [sessionMode, setSessionMode] = useState<SessionModeTag>('terminal')
   const [title, setTitle] = useState('')
   const [cwd, setCwd] = useState('')
   const [useWorktree, setUseWorktree] = useState(true)
@@ -198,15 +198,22 @@ function NewSessionForm({
         await saveConfig({ proxy: proxyVal || undefined })
         setSavedProxy(proxyVal)
       }
-      await onCreate({
+      const baseReq = {
         title: title.trim(),
         program: 'claude',
         cwd: cwd.trim(),
         use_worktree: useWorktree,
         worktree_name: worktreeName.trim() || undefined,
         proxy: proxyVal || undefined,
-        mode: sessionMode,
-      })
+      }
+      // Chat mode needs a unique addressing handle (`name`); seed from the
+      // title until the form grows a dedicated field. The server enforces
+      // uniqueness — collisions surface as a 400.
+      await onCreate(
+        sessionMode === 'chat'
+          ? { ...baseReq, mode: 'chat', name: title.trim() }
+          : { ...baseReq, mode: 'terminal' },
+      )
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -224,7 +231,7 @@ function NewSessionForm({
           <SegmentedControl.Root
             size="2"
             value={sessionMode}
-            onValueChange={(v) => setSessionMode(v as SessionMode)}
+            onValueChange={(v) => setSessionMode(v as SessionModeTag)}
           >
             <SegmentedControl.Item value="terminal">Terminal</SegmentedControl.Item>
             <SegmentedControl.Item value="chat">Chat (Mode B)</SegmentedControl.Item>

@@ -4,10 +4,19 @@
 
 import type { ReactNode } from 'react';
 
-export type PassthroughRenderer = (props: {
+export interface PassthroughRendererProps {
   kind: string;
   payload: unknown;
-}) => ReactNode;
+  /**
+   * Resolve a `neige.ask_user_question` dialog by sending an
+   * `answer_question` WS frame. Optional — only the chat WS-driven mount
+   * supplies it; static / preview mounts pass undefined and the renderer
+   * should fall back to a read-only display.
+   */
+  answerQuestion?: (questionId: string, answer: string) => void;
+}
+
+export type PassthroughRenderer = (props: PassthroughRendererProps) => ReactNode;
 
 export const passthroughRegistry = new Map<string, PassthroughRenderer>();
 

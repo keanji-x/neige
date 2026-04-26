@@ -1,7 +1,12 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::{
     Router,
     routing::{delete, get, post},
 };
+use tokio::sync::{Mutex, oneshot};
+use uuid::Uuid;
 
 use crate::auth::AuthConfig;
 use crate::conversation::SharedManager;
@@ -14,10 +19,23 @@ mod proxy;
 mod util;
 mod ws;
 
+/// Outstanding "ask user a question" requests, keyed by (session_id, question_id).
+///
+/// Populated by the MCP `ask_question` tool when an inner claude asks its
+/// own session a question (self-target). The chat WS handler resolves the
+/// oneshot when the user types an answer in the dialog. The tool call
+/// awaits the receiver and returns the answer to the caller.
+///
+/// Removed on either: success path (caller drains and removes after recv),
+/// session deletion (kill_session sweeps), or sender drop (rx errors out
+/// and the tool errors out cleanly).
+pub type PendingQuestions = Arc<Mutex<HashMap<(Uuid, Uuid), oneshot::Sender<String>>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub manager: SharedManager,
     pub auth: AuthConfig,
+    pub pending_questions: PendingQuestions,
 }
 
 impl axum::extract::FromRef<AppState> for AuthConfig {

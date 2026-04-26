@@ -44,6 +44,13 @@ export interface UseChatSessionApi {
   sendMessage: (content: string) => void;
   /** Interrupt the current claude turn (server SIGINTs the subprocess). No-op if WS not open. */
   stop: () => void;
+  /**
+   * Resolve a server-side `ask_question` self-ask dialog. Sends an
+   * `answer_question` WS frame; the server unblocks the awaiting MCP tool
+   * call. No-op if WS not open (the MCP call will keep waiting; the user
+   * can retry once reconnected).
+   */
+  answerQuestion: (questionId: string, answer: string) => void;
 }
 
 const MAX_RECONNECT_DELAY = 10000;
@@ -214,6 +221,12 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     ws.send(JSON.stringify({ type: 'stop' }));
   }, []);
 
+  const answerQuestion = useCallback((questionId: string, answer: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'answer_question', question_id: questionId, answer }));
+  }, []);
+
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);
 
   // "Generating" = the last message is an in-flight assistant turn. We treat
@@ -226,5 +239,14 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     return !last.isComplete;
   })();
 
-  return { events, timeline, toolResults, status, isGenerating, sendMessage, stop };
+  return {
+    events,
+    timeline,
+    toolResults,
+    status,
+    isGenerating,
+    sendMessage,
+    stop,
+    answerQuestion,
+  };
 }

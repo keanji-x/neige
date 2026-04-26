@@ -15,11 +15,18 @@ interface ChatViewProps {
   onSubmit?: (text: string) => void;
   onStop?: () => void;
   isGenerating?: boolean;
+  /**
+   * Optional. Wired by ChatPanel when the chat WS is live so dialog
+   * passthrough renderers (`neige.ask_user_question`) can reply. Static
+   * mounts (e.g. tests, mockEvents demos) leave it undefined and the
+   * dialog renders read-only.
+   */
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 }
 
 const STICK_THRESHOLD_PX = 120;
 
-export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewProps) {
+export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuestion }: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
   const respond = onSubmit ?? (() => {});
   // Only the most-recent user message is editable; earlier turns belong to the
@@ -96,6 +103,7 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
           <PassthroughGroup
             entries={timeline.passthroughs}
             insertedAfterMessageIndex={null}
+            onAnswerQuestion={onAnswerQuestion}
           />
           {timeline.messages.map((m, i) => (
             <Fragment key={m.id}>
@@ -108,6 +116,7 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
               <PassthroughGroup
                 entries={timeline.passthroughs}
                 insertedAfterMessageIndex={i}
+                onAnswerQuestion={onAnswerQuestion}
               />
             </Fragment>
           ))}
@@ -138,9 +147,11 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
 function PassthroughGroup({
   entries,
   insertedAfterMessageIndex,
+  onAnswerQuestion,
 }: {
   entries: PassthroughEntry[];
   insertedAfterMessageIndex: number | null;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 }) {
   const slice = entries.filter(
     (e) => e.insertedAfterMessageIndex === insertedAfterMessageIndex,
@@ -151,7 +162,12 @@ function PassthroughGroup({
       {slice.map((entry) => {
         const Renderer = lookupRenderer(entry.kind) ?? DefaultPassthroughCard;
         return (
-          <Renderer key={entry.id} kind={entry.kind} payload={entry.payload} />
+          <Renderer
+            key={entry.id}
+            kind={entry.kind}
+            payload={entry.payload}
+            answerQuestion={onAnswerQuestion}
+          />
         );
       })}
     </>
