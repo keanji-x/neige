@@ -1,11 +1,16 @@
 // Renderer for the Task (sub-agent) tool: agent type chip + description, with
-// the launch prompt tucked behind a toggle and the agent's reply below.
+// the launch prompt tucked behind a toggle and — when the spawned sub-agent
+// has streamed any messages — its full inner timeline below, rendered with
+// the same ChatTimelineView as the root chat. Nested Task calls inside the
+// sub-agent recurse for free because TaskToolCard re-enters that view via
+// the same ToolUseBlock → TaskToolCard chain.
 
 import { useState } from 'react';
 import { Badge, Box, Button, Flex, Text } from '@radix-ui/themes';
 import { Bot } from 'lucide-react';
-import { DefaultToolCard } from './DefaultToolCard';
+import { ChatTimelineView } from '../components/ChatTimelineView';
 import { ToolResultBlock } from '../components/ToolResultBlock';
+import { DefaultToolCard } from './DefaultToolCard';
 import type { ToolRendererProps } from './registry';
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -33,13 +38,19 @@ export function parseTaskInput(input: unknown): TaskInput | null {
 }
 
 export function TaskToolCard(props: ToolRendererProps) {
-  const { input, result } = props;
-  const [open, setOpen] = useState(false);
+  const { input, result, subagent, toolResults, respond, onAnswerQuestion } = props;
+  const [promptOpen, setPromptOpen] = useState(false);
+  // Default the sub-agent stream to expanded — the whole point of this
+  // refactor is to expose what the sub-agent did. Users can collapse if
+  // they want a tighter view.
+  const [streamOpen, setStreamOpen] = useState(true);
 
   const parsed = parseTaskInput(input);
   if (!parsed) return <DefaultToolCard {...props} />;
 
   const isError = !!result?.isError;
+  const subagentMsgCount = subagent?.messages.length ?? 0;
+  const hasSubagent = subagentMsgCount > 0;
 
   return (
     <Flex direction="column" gap="2" mt="1">
@@ -49,13 +60,23 @@ export function TaskToolCard(props: ToolRendererProps) {
           {parsed.description}
         </Text>
         <Badge color="gray">{parsed.subagent_type}</Badge>
+        {hasSubagent && (
+          <Badge color="blue" variant="soft">
+            {subagentMsgCount} sub-agent message{subagentMsgCount === 1 ? '' : 's'}
+          </Badge>
+        )}
       </Flex>
-      <Box>
-        <Button size="1" variant="ghost" color="gray" onClick={() => setOpen((v) => !v)}>
-          {open ? 'hide prompt' : 'show prompt'}
+      <Flex gap="2" wrap="wrap">
+        <Button size="1" variant="ghost" color="gray" onClick={() => setPromptOpen((v) => !v)}>
+          {promptOpen ? 'hide prompt' : 'show prompt'}
         </Button>
-      </Box>
-      {open && (
+        {hasSubagent && (
+          <Button size="1" variant="ghost" color="gray" onClick={() => setStreamOpen((v) => !v)}>
+            {streamOpen ? 'hide sub-agent stream' : 'show sub-agent stream'}
+          </Button>
+        )}
+      </Flex>
+      {promptOpen && (
         <Box
           style={{
             fontFamily: 'var(--code-font-family)',
@@ -71,6 +92,31 @@ export function TaskToolCard(props: ToolRendererProps) {
           }}
         >
           {parsed.prompt}
+        </Box>
+      )}
+      {hasSubagent && streamOpen && subagent && (
+        <Box
+          // Visually nest the sub-agent stream inside the Task card so the
+          // hierarchy is obvious at a glance — left bar, slight inset.
+          style={{
+            borderLeft: '2px solid var(--accent-a6)',
+            paddingLeft: 12,
+            marginLeft: 4,
+          }}
+        >
+          <ChatTimelineView
+            timeline={subagent}
+            // Inner-tool results live in the same flat map as the root's
+            // (toolUseIds are globally unique). Fall back to an empty
+            // record if the host didn't provide one — DefaultToolCard
+            // tolerates a missing result.
+            toolResults={toolResults ?? {}}
+            respond={respond}
+            onAnswerQuestion={onAnswerQuestion}
+            // Sub-agents don't accept user input; the pencil-edit
+            // affordance would be misleading.
+            editableLastUser={false}
+          />
         </Box>
       )}
       {result && (

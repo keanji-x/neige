@@ -18,6 +18,7 @@ import { GrepToolCard } from './GrepToolCard';
 import { GlobToolCard } from './GlobToolCard';
 import { TaskToolCard } from './TaskToolCard';
 import type { ToolRendererProps } from './registry';
+import type { ChatTimeline } from '../derive';
 
 function render(node: React.ReactElement): string {
   return renderToString(<Theme>{node}</Theme>);
@@ -27,6 +28,7 @@ const baseProps: Omit<ToolRendererProps, 'input' | 'name'> = {
   isStreaming: false,
   result: undefined,
   respond: () => {},
+  toolUseId: 'toolu_smoke',
 };
 
 describe('tool card render smoke', () => {
@@ -144,5 +146,58 @@ describe('tool card render smoke', () => {
     );
     expect(out).toContain('survey deps');
     expect(out).toContain('general-purpose');
+  });
+
+  it('TaskToolCard renders the spawned sub-agent timeline inline', () => {
+    // Hand-craft the same shape derive.ts produces for a Task that spawned
+    // a sub-agent which emitted one assistant text block. Verifies that the
+    // recursive ChatTimelineView wires up: the sub-agent's text appears
+    // inside the Task card's body, and the message-count badge reflects it.
+    const subagent: ChatTimeline = {
+      init: null,
+      status: null,
+      passthroughs: [],
+      result: null,
+      subagents: {},
+      messages: [
+        {
+          role: 'assistant',
+          id: 'sub-msg',
+          messageId: 'sub-msg',
+          model: 'claude',
+          isComplete: true,
+          stopReason: 'end_turn',
+          usage: null,
+          blocks: [
+            {
+              type: 'text',
+              index: 0,
+              text: 'sub-agent finished its homework',
+              isStreaming: false,
+            },
+          ],
+        },
+      ],
+    };
+    const out = render(
+      <TaskToolCard
+        {...baseProps}
+        name="Task"
+        toolUseId="toolu_task_smoke"
+        input={{
+          description: 'do thing',
+          prompt: 'do',
+          subagent_type: 'general-purpose',
+        }}
+        subagent={subagent}
+        toolResults={{}}
+      />,
+    );
+    expect(out).toContain('do thing');
+    expect(out).toContain('sub-agent finished its homework');
+    // The "N sub-agent message(s)" badge — React's SSR fragments the count
+    // and the trailing text with an HTML comment, so just check the
+    // unfragmented part to keep the assertion stable.
+    expect(out).toContain('sub-agent message');
   });
 });

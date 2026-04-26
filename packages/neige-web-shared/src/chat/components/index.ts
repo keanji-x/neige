@@ -3,6 +3,7 @@
 // desktop and mobile.
 
 export { ChatView } from './ChatView';
+export { ChatTimelineView } from './ChatTimelineView';
 export { MessageBubble } from './MessageBubble';
 export { TextBlock } from './TextBlock';
 export { ThinkingBlock } from './ThinkingBlock';

@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import { Box, Button, Card, Flex, IconButton, Text, TextArea } from '@radix-ui/themes';
 import { Pencil } from 'lucide-react';
-import type { AssistantBlock, ChatMessage, ToolResultsById } from '../derive';
+import type { AssistantBlock, ChatMessage, ChatTimeline, ToolResultsById } from '../derive';
 import type { ContentBlock } from '../types';
 import { TextBlock } from './TextBlock';
 import { ThinkingBlock } from './ThinkingBlock';
@@ -21,6 +21,13 @@ interface MessageBubbleProps {
    * text — i.e. it's resend-as-follow-up, not a history rewrite.
    */
   canEdit?: boolean;
+  /** Sub-agent timelines from the enclosing ChatTimeline. ToolUseBlock looks
+   *  up its own entry by tool_use_id and forwards it to the matching
+   *  renderer (TaskToolCard uses it; others ignore it). */
+  subagents?: Record<string, ChatTimeline>;
+  /** Forwarded so AskUserQuestion-style cards inside sub-agent timelines
+   *  can still post answers back. */
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 }
 
 export function MessageBubble({
@@ -28,6 +35,8 @@ export function MessageBubble({
   toolResults,
   respond,
   canEdit,
+  subagents,
+  onAnswerQuestion,
 }: MessageBubbleProps) {
   if (message.role === 'user') {
     return <UserBubble blocks={message.blocks} canEdit={canEdit} respond={respond} />;
@@ -38,6 +47,8 @@ export function MessageBubble({
       toolResults={toolResults}
       isComplete={message.isComplete}
       respond={respond}
+      subagents={subagents}
+      onAnswerQuestion={onAnswerQuestion}
     />
   );
 }
@@ -155,11 +166,15 @@ function AssistantTurn({
   toolResults,
   isComplete,
   respond,
+  subagents,
+  onAnswerQuestion,
 }: {
   blocks: AssistantBlock[];
   toolResults: ToolResultsById;
   isComplete: boolean;
   respond: (text: string) => void;
+  subagents?: Record<string, ChatTimeline>;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 }) {
   return (
     <Box mb="4">
@@ -191,6 +206,10 @@ function AssistantTurn({
                   isStreaming={block.isStreaming}
                   result={toolResults[block.toolUseId]}
                   respond={respond}
+                  toolUseId={block.toolUseId}
+                  subagents={subagents}
+                  toolResults={toolResults}
+                  onAnswerQuestion={onAnswerQuestion}
                 />
               );
             case 'unknown':

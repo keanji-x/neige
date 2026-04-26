@@ -2,12 +2,11 @@
 // a scrollable bubble feed with a compose box pinned to the bottom.
 // Auto-scrolls to bottom on new content unless the user has scrolled away.
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
-import { deriveTimeline, type PassthroughEntry } from '../derive';
+import { deriveTimeline } from '../derive';
 import type { NeigeEvent } from '../types';
-import { DefaultPassthroughCard, lookupRenderer } from '../passthrough';
-import { MessageBubble } from './MessageBubble';
+import { ChatTimelineView } from './ChatTimelineView';
 import { ComposeBox } from './ComposeBox';
 
 interface ChatViewProps {
@@ -29,14 +28,6 @@ const STICK_THRESHOLD_PX = 120;
 export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuestion }: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
   const respond = onSubmit ?? (() => {});
-  // Only the most-recent user message is editable; earlier turns belong to the
-  // committed conversation.
-  const lastUserIndex = (() => {
-    for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
-      if (timeline.messages[i].role === 'user') return i;
-    }
-    return -1;
-  })();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -100,26 +91,13 @@ export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuest
               </Text>
             </Flex>
           )}
-          <PassthroughGroup
-            entries={timeline.passthroughs}
-            insertedAfterMessageIndex={null}
+          <ChatTimelineView
+            timeline={timeline}
+            toolResults={toolResults}
+            respond={respond}
             onAnswerQuestion={onAnswerQuestion}
+            editableLastUser
           />
-          {timeline.messages.map((m, i) => (
-            <Fragment key={m.id}>
-              <MessageBubble
-                message={m}
-                toolResults={toolResults}
-                respond={respond}
-                canEdit={m.role === 'user' && i === lastUserIndex}
-              />
-              <PassthroughGroup
-                entries={timeline.passthroughs}
-                insertedAfterMessageIndex={i}
-                onAnswerQuestion={onAnswerQuestion}
-              />
-            </Fragment>
-          ))}
           {timeline.result && (
             <Flex justify="center" py="3">
               <Text size="1" color="gray">
@@ -141,35 +119,5 @@ export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuest
         isGenerating={isGenerating}
       />
     </Flex>
-  );
-}
-
-function PassthroughGroup({
-  entries,
-  insertedAfterMessageIndex,
-  onAnswerQuestion,
-}: {
-  entries: PassthroughEntry[];
-  insertedAfterMessageIndex: number | null;
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
-}) {
-  const slice = entries.filter(
-    (e) => e.insertedAfterMessageIndex === insertedAfterMessageIndex,
-  );
-  if (slice.length === 0) return null;
-  return (
-    <>
-      {slice.map((entry) => {
-        const Renderer = lookupRenderer(entry.kind) ?? DefaultPassthroughCard;
-        return (
-          <Renderer
-            key={entry.id}
-            kind={entry.kind}
-            payload={entry.payload}
-            answerQuestion={onAnswerQuestion}
-          />
-        );
-      })}
-    </>
   );
 }

@@ -97,6 +97,7 @@ describe('BashToolCard smoke', () => {
       isStreaming: false,
       result: { content: 'hi\n', isError: false },
       respond: () => {},
+      toolUseId: 'toolu_smoke',
     };
     let html = '';
     try {
@@ -122,6 +123,7 @@ describe('BashToolCard smoke', () => {
       isStreaming: false,
       result: { content: '', isError: true },
       respond: () => {},
+      toolUseId: 'toolu_smoke',
     };
     let html = '';
     try {

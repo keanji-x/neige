@@ -15,6 +15,7 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
+import type { ChatTimeline, ToolResultsById } from '../derive';
 import type { ToolResultContent } from '../types';
 import { ToolResultBlock } from './ToolResultBlock';
 import { DefaultToolCard, lookupToolRenderer } from '../tools';
@@ -25,6 +26,18 @@ interface ToolUseBlockProps {
   isStreaming: boolean;
   result?: { content: ToolResultContent; isError: boolean };
   respond: (text: string) => void;
+  /** Stable Anthropic-issued id; threaded into the renderer for correlation
+   *  (sub-agent lookup, stable keys, etc.). */
+  toolUseId: string;
+  /** Sub-agent timelines keyed by their spawning tool_use_id. Only the entry
+   *  matching this block's `toolUseId` is forwarded to the renderer. */
+  subagents?: Record<string, ChatTimeline>;
+  /** Flat tool result lookup so nested ChatTimelineViews (inside
+   *  TaskToolCard) can find their own inner-tool results. */
+  toolResults?: ToolResultsById;
+  /** AskUserQuestion answer dispatcher; passed through to renderers that
+   *  may host interactive cards inside their sub-agent timeline. */
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 }
 
 const ICONS: Record<string, LucideIcon> = {
@@ -82,10 +95,21 @@ function summarizeInput(name: string, input: unknown): string {
   }
 }
 
-export function ToolUseBlock({ name, input, isStreaming, result, respond }: ToolUseBlockProps) {
+export function ToolUseBlock({
+  name,
+  input,
+  isStreaming,
+  result,
+  respond,
+  toolUseId,
+  subagents,
+  toolResults,
+  onAnswerQuestion,
+}: ToolUseBlockProps) {
   const [open, setOpen] = useState(false);
   const summary = summarizeInput(name, input);
   const Renderer = lookupToolRenderer(name) ?? DefaultToolCard;
+  const subagent = subagents?.[toolUseId];
 
   return (
     <Box
@@ -133,6 +157,10 @@ export function ToolUseBlock({ name, input, isStreaming, result, respond }: Tool
             isStreaming={isStreaming}
             result={result}
             respond={respond}
+            toolUseId={toolUseId}
+            subagent={subagent}
+            toolResults={toolResults}
+            onAnswerQuestion={onAnswerQuestion}
           />
         </Box>
       )}
