@@ -161,34 +161,103 @@ async function main(): Promise<void> {
   // is safe.
   const promptQueue = new AsyncQueue<SDKUserMessage>();
 
-  // Tracks pending askUserQuestion resolvers keyed by question_id.
-  // Today nothing populates this — the canUseTool path is allow-all —
-  // but `awaitUserAnswer` below is the seam for the future MCP-based
-  // ask-tool. Wired now so the control-channel `answer_question` frame
-  // already routes correctly.
+  // Tracks pending askUserQuestion resolvers keyed by question_id. The
+  // control-channel `answer_question` frame resolves the matching entry;
+  // canUseTool then surfaces the user's choice back to claude as the
+  // tool's permission verdict (see askUserQuestion below).
   const pendingQuestions = new Map<string, (answer: string) => void>();
 
-  const awaitUserAnswer = (promptText: string): Promise<string> => {
+  /**
+   * Surface a structured AskUserQuestion to the browser via a passthrough
+   * NeigeEvent and block until the user picks an option (or types a
+   * free-form answer). The shape of the emitted payload matches what
+   * `packages/neige-web-shared/src/chat/passthrough/AskUserQuestionPassthroughCard.tsx`
+   * expects today — `{question_id, question, options: string[]}` — taken
+   * from the FIRST question in the input. Multi-question support is a
+   * follow-up that requires a frontend renderer update; the SDK's input
+   * schema (`AskUserQuestionInput` in `sdk-tools.d.ts`) allows 1-4
+   * questions but the model almost always asks one at a time.
+   */
+  const askUserQuestion = (
+    questionText: string,
+    optionLabels: string[],
+  ): Promise<string> => {
     const questionId = uuidv4();
     return new Promise<string>((resolve) => {
       pendingQuestions.set(questionId, resolve);
       emit({
         type: 'passthrough',
         session_id: args.sessionId,
-        kind: 'ask_user_question',
-        payload: { question_id: questionId, prompt: promptText },
+        kind: 'neige.ask_user_question',
+        payload: {
+          question_id: questionId,
+          question: questionText,
+          options: optionLabels,
+        },
       });
     });
   };
-  // Mark as intentionally retained — exported via closure for the future
-  // MCP ask-tool integration (see step 5 of the Track A brief).
-  void awaitUserAnswer;
 
-  // -- canUseTool: allow-all for now, with a clean seam for later -----------
+  /**
+   * Pull `{question, options[].label}` out of an AskUserQuestion input,
+   * defensive about partial / malformed shapes (the model occasionally
+   * emits an extra wrapping object; the schema also allows 1-4 nested
+   * questions so we always take the first). Returns null if we can't
+   * find a usable question — caller falls through to the default
+   * permission verdict.
+   */
+  const parseAskUserQuestionInput = (
+    input: Record<string, unknown>,
+  ): { question: string; options: string[] } | null => {
+    const questions = (input as { questions?: unknown }).questions;
+    if (!Array.isArray(questions) || questions.length === 0) return null;
+    const first = questions[0];
+    if (!first || typeof first !== 'object') return null;
+    const q = (first as { question?: unknown }).question;
+    if (typeof q !== 'string' || q.length === 0) return null;
+    const rawOpts = (first as { options?: unknown }).options;
+    const labels: string[] = [];
+    if (Array.isArray(rawOpts)) {
+      for (const o of rawOpts) {
+        if (o && typeof o === 'object') {
+          const label = (o as { label?: unknown }).label;
+          if (typeof label === 'string' && label.length > 0) labels.push(label);
+        }
+      }
+    }
+    return { question: q, options: labels };
+  };
+
+  // -- canUseTool: intercept AskUserQuestion, allow everything else --------
+  //
+  // The SDK fires canUseTool before every tool execution, including the
+  // built-in `AskUserQuestion`. We use that hook to surface the question
+  // to the browser, await the answer, and return it via deny+message —
+  // claude reads the deny message as the answer text and continues. This
+  // replaces the old `disallowedTools: ['AskUserQuestion']` workaround:
+  // that flag existed because the legacy `--print` harness returned a
+  // 17-char placeholder without giving the user a chance to answer.
+  // canUseTool gives us a real interactive seam, so the tool can stay
+  // enabled.
   const canUseTool: NonNullable<Options['canUseTool']> = async (
-    _toolName,
+    toolName,
     input,
   ): Promise<PermissionResult> => {
+    if (toolName === 'AskUserQuestion') {
+      const parsed = parseAskUserQuestionInput(input);
+      if (parsed) {
+        const answer = await askUserQuestion(parsed.question, parsed.options);
+        // Deny is the cleanest path for routing the user's answer back to
+        // the model: PermissionResult has no "succeed with this result"
+        // variant, so we hijack the deny message. Phrased as "User
+        // answered: …" so claude reads it as the user's selection rather
+        // than a refusal.
+        return { behavior: 'deny', message: `User answered: ${answer}` };
+      }
+      // Fall through to allow-all if the input shape didn't match — the
+      // built-in tool will then run its placeholder path; not great, but
+      // strictly no worse than today's disallow.
+    }
     return { behavior: 'allow', updatedInput: input };
   };
 
@@ -209,9 +278,11 @@ async function main(): Promise<void> {
     cwd: args.cwd,
     includePartialMessages: true,
     includeHookEvents: true,
-    // Parity with the existing Rust path until we have an MCP-based
-    // replacement (see chat-mode-followups context).
-    disallowedTools: ['AskUserQuestion'],
+    // No `disallowedTools: ['AskUserQuestion']` here: the canUseTool
+    // hook above intercepts the call, surfaces the question to the
+    // browser, and returns the user's answer via deny+message. The
+    // legacy stream-json `--print` harness needed the disallow because
+    // it had no interactive seam at all; the SDK does.
     canUseTool,
     ...(args.resume ? { resume: args.sessionId } : { sessionId: args.sessionId }),
     ...(mcpServers ? { mcpServers } : {}),
