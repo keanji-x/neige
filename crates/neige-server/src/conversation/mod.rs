@@ -327,15 +327,33 @@ fn build_command(
 }
 
 /// Build proxy environment variables from a proxy URL.
+///
+/// Always pairs the proxy variables with a NO_PROXY exemption for the
+/// loopback addresses. Chat-mode claudes hit the local MCP server at
+/// `http://127.0.0.1:<port>/mcp/<id>` (see `write_mcp_config_file`); without
+/// this exemption, an upstream proxy intercepts those requests and either
+/// refuses internal addresses or routes them to the wrong host, breaking
+/// every MCP tool call (introduce, send_message, etc.). NO_PROXY is set
+/// even when no user proxy is provided, so any proxy inherited from the
+/// surrounding shell environment also gets exempted for loopback.
 fn proxy_env(proxy: Option<&str>) -> Vec<(String, String)> {
-    proxy.map(|p| {
-        vec![
+    // Cover the common loopback aliases. Most HTTP clients (curl, libcurl,
+    // node, reqwest, fetch) treat NO_PROXY entries as substring/suffix
+    // matches; "127.0.0.1,localhost,::1,0.0.0.0" works across all of them.
+    let no_proxy = "127.0.0.1,localhost,::1,0.0.0.0";
+    let mut env = vec![
+        ("NO_PROXY".to_string(), no_proxy.to_string()),
+        ("no_proxy".to_string(), no_proxy.to_string()),
+    ];
+    if let Some(p) = proxy {
+        env.extend([
             ("HTTP_PROXY".to_string(), p.to_string()),
             ("HTTPS_PROXY".to_string(), p.to_string()),
             ("http_proxy".to_string(), p.to_string()),
             ("https_proxy".to_string(), p.to_string()),
-        ]
-    }).unwrap_or_default()
+        ]);
+    }
+    env
 }
 
 /// Build the resume command for a claude session.
