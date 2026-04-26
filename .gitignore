@@ -7,6 +7,8 @@ web/dist
 web-mobile/node_modules
 web-mobile/dist
 packages/*/node_modules
+runners/*/node_modules
+runners/*/dist
 
 # Vitest cache (created at repo root by `vitest run`)
 .vite/
