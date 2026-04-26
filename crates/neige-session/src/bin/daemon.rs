@@ -10,11 +10,17 @@
 //!   (~1 MiB instead of a single-screen snapshot) for never having a
 //!   server-side vt100 parser to maintain or hit edge cases on.
 //!
-//! - **Chat mode** (`--mode chat`): spawn the program with stdio piped (no
-//!   PTY), parse each NDJSON line on stdout via `neige_session::stream_json`,
-//!   and emit one `DaemonMsg::ChatEvent` per produced `NeigeEvent`. Each
-//!   incoming `ClientMsg::ChatUserMessage` is wrapped in the stream-json
-//!   user-message envelope and written to the child's stdin.
+//! - **Chat mode** (`--mode chat`): spawn the Node sidecar runner
+//!   (`runners/neige-chat-runner/cli.js`) under
+//!   `node <runner-path> --session-id <uuid> --cwd <cwd> [--resume]
+//!   [--mcp-config <path>] [--program <prog>]`. The runner uses
+//!   `@anthropic-ai/claude-agent-sdk` and emits one already-serialized
+//!   `NeigeEvent` JSON per stdout line, which the daemon forwards
+//!   opaquely (no parsing) into the replay buffer + broadcast. Control
+//!   frames sent the other direction are NDJSON lines on the runner's
+//!   stdin: `{"kind":"user_message","content":...}`,
+//!   `{"kind":"stop"}`, or
+//!   `{"kind":"answer_question","question_id":...,"answer":...}`.
 //!
 //! Both modes survive all client disconnects; both exit when the child does.
 
@@ -23,7 +29,6 @@ use std::io::Write as _;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,7 +40,6 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use neige_session::stream_json::{parse_line, to_neige_events};
 use neige_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -83,15 +87,41 @@ struct Cli {
     #[arg(long)]
     ready_fd: Option<i32>,
 
-    /// Session mode. Default is `terminal` (PTY); `chat` runs the child
-    /// headless and parses stream-json on stdout.
+    /// Session mode. Default is `terminal` (PTY); `chat` spawns the Node
+    /// sidecar runner under `node <runner-path> ...` and forwards NDJSON
+    /// stdout opaquely.
     #[arg(long, value_enum, default_value_t = Mode::Terminal)]
     mode: Mode,
 
-    /// Program and args to run. Use `--` to separate from daemon flags. In
-    /// chat mode this is typically `claude --print --input-format=stream-json
-    /// --output-format=stream-json --include-partial-messages --session-id <uuid>`.
-    #[arg(last = true, required = true)]
+    /// Path to `runners/neige-chat-runner/cli.js`. Daemon spawns
+    /// `node <runner-path> --session-id <id> --cwd <cwd> ...`. Required
+    /// when `--mode chat`; ignored otherwise.
+    #[arg(long)]
+    runner_path: Option<PathBuf>,
+
+    /// If set, the runner is asked to resume the prior agent session for
+    /// `--id` (`--resume` is forwarded on the runner's argv). Daemon
+    /// itself doesn't persist anything; the parent decides this. Chat
+    /// mode only.
+    #[arg(long, default_value_t = false)]
+    resume: bool,
+
+    /// Optional `--mcp-config <path>` forwarded to the runner. Chat mode
+    /// only.
+    #[arg(long)]
+    mcp_config: Option<PathBuf>,
+
+    /// Optional `--program <name>` forwarded to the runner (informational
+    /// label, e.g. "claude-code"). Chat mode only.
+    #[arg(long)]
+    program: Option<String>,
+
+    /// Program and args to run **in terminal mode only**. Use `--` to
+    /// separate from daemon flags. Required when `--mode terminal`;
+    /// ignored when `--mode chat` (the chat-mode argv is built from
+    /// `--runner-path`, `--id`, `--cwd`, `--resume`, `--mcp-config`,
+    /// `--program`).
+    #[arg(last = true)]
     cmd: Vec<String>,
 }
 
@@ -198,11 +228,28 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    tracing::info!(id = %cli.id, mode = ?cli.mode, cmd = ?cli.cmd, "starting daemon");
+    tracing::info!(
+        id = %cli.id,
+        mode = ?cli.mode,
+        cmd = ?cli.cmd,
+        runner_path = ?cli.runner_path,
+        resume = cli.resume,
+        "starting daemon"
+    );
 
     match cli.mode {
-        Mode::Terminal => run_terminal(cli).await,
-        Mode::Chat => run_chat(cli).await,
+        Mode::Terminal => {
+            if cli.cmd.is_empty() {
+                anyhow::bail!("--mode terminal requires a `-- <program> [args...]` trailing argv");
+            }
+            run_terminal(cli).await
+        }
+        Mode::Chat => {
+            if cli.runner_path.is_none() {
+                anyhow::bail!("--mode chat requires --runner-path <path-to-cli.js>");
+            }
+            run_chat(cli).await
+        }
     }
 }
 
@@ -281,13 +328,54 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Control frames the daemon writes onto the Node runner's stdin.
+///
+/// Wire shape (one NDJSON line per frame, opaque to anyone but the
+/// runner): `{"kind":"user_message","content":"..."}`,
+/// `{"kind":"stop"}`,
+/// `{"kind":"answer_question","question_id":"<uuid>","answer":"..."}`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ChatControl {
+    UserMessage { content: String },
+    Stop,
+    AnswerQuestion {
+        question_id: Uuid,
+        answer: String,
+    },
+}
+
 async fn run_chat(cli: Cli) -> anyhow::Result<()> {
-    // ---- spawn child with piped stdio (no PTY) ----
-    let mut cmd = Command::new(&cli.cmd[0]);
-    cmd.args(&cli.cmd[1..]);
-    if let Some(cwd) = &cli.cwd {
-        cmd.current_dir(cwd);
+    // ---- spawn the Node runner (piped stdio, no PTY) ----
+    let runner_path = cli
+        .runner_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("run_chat called without --runner-path"))?;
+
+    // Build argv: node <runner-path> --session-id <id> --cwd <cwd>
+    //   [--resume] [--mcp-config <path>] [--program <prog>]
+    // The runner expects --cwd to be the user's project cwd. If the daemon
+    // wasn't told one we fall back to its own cwd so the SDK still has a
+    // sensible working directory.
+    let runner_cwd = match &cli.cwd {
+        Some(p) => p.clone(),
+        None => std::env::current_dir()?,
+    };
+
+    let mut cmd = Command::new("node");
+    cmd.arg(runner_path);
+    cmd.arg("--session-id").arg(cli.id.to_string());
+    cmd.arg("--cwd").arg(&runner_cwd);
+    if cli.resume {
+        cmd.arg("--resume");
     }
+    if let Some(p) = &cli.mcp_config {
+        cmd.arg("--mcp-config").arg(p);
+    }
+    if let Some(p) = &cli.program {
+        cmd.arg("--program").arg(p);
+    }
+
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -295,19 +383,16 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         // handle must not kill the running child.
         .kill_on_drop(false);
 
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        anyhow::anyhow!("failed to spawn `node {}`: {e}", runner_path.display())
+    })?;
     let child_stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("missing child stdin"))?;
     let child_stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
     let child_stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing child stderr"))?;
-    // Capture the PID before the wait task takes ownership of `child`; chat
-    // clients SIGINT through this to interrupt an in-flight turn.
-    let child_pid: Arc<AtomicI32> = Arc::new(AtomicI32::new(
-        child.id().map(|p| p as i32).unwrap_or(0),
-    ));
 
     let buffer: SharedEventBuffer = Arc::new(Mutex::new(EventBuffer::new(cli.buffer_bytes)));
     let (event_tx, _) = broadcast::channel::<ChatEvt>(2048);
-    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
+    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<ChatControl>();
 
     spawn_chat_stdout_reader(child_stdout, buffer.clone(), event_tx.clone());
     spawn_chat_stderr_reader(child_stderr);
@@ -316,14 +401,10 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
     // ---- child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let event_tx_w = event_tx.clone();
-    let child_pid_w = child_pid.clone();
     tokio::spawn(async move {
         let status = child.wait().await.ok();
         let code = status.and_then(|s| s.code());
-        tracing::info!(?code, "chat child wait returned");
-        // Clear the pid so a late ChatStop after exit can't SIGINT a recycled
-        // unrelated process.
-        child_pid_w.store(0, Ordering::SeqCst);
+        tracing::info!(?code, "chat runner wait returned");
         let _ = event_tx_w.send(ChatEvt::Exit(code));
         let _ = shutdown_tx.send(());
     });
@@ -339,11 +420,10 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         event_tx.clone(),
         buffer.clone(),
         stdin_tx.clone(),
-        child_pid.clone(),
     ));
 
     let _ = shutdown_rx.await;
-    tracing::info!("chat child exited, shutting down");
+    tracing::info!("chat runner exited, shutting down");
     tokio::time::sleep(Duration::from_millis(200)).await;
     accept_task.abort();
 
@@ -432,9 +512,10 @@ fn spawn_child_waiter(
     });
 }
 
-/// Read NDJSON from chat-mode child stdout. Each line gets parsed and any
-/// produced `NeigeEvent`s are serialized, appended to the replay buffer, and
-/// broadcast to all attached clients.
+/// Read NDJSON from the chat-mode runner's stdout. Each non-empty line is
+/// already a serialized `NeigeEvent` JSON string — the daemon does NOT
+/// parse it. We push the line into the replay buffer and broadcast it
+/// verbatim to every attached client.
 fn spawn_chat_stdout_reader(
     stdout: tokio::process::ChildStdout,
     buffer: SharedEventBuffer,
@@ -448,26 +529,10 @@ fn spawn_chat_stdout_reader(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let (raw, original) = match parse_line(&line) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::debug!(error = %e, line = %line, "stream_json parse error");
-                            continue;
-                        }
-                    };
-                    for ev in to_neige_events(raw, original) {
-                        match serde_json::to_string(&ev) {
-                            Ok(json) => {
-                                if let Ok(mut b) = buffer.lock() {
-                                    b.append(json.clone());
-                                }
-                                let _ = event_tx.send(ChatEvt::Event(json));
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "serialize NeigeEvent failed");
-                            }
-                        }
+                    if let Ok(mut b) = buffer.lock() {
+                        b.append(line.clone());
                     }
+                    let _ = event_tx.send(ChatEvt::Event(line));
                 }
                 Ok(None) => break, // EOF
                 Err(e) => {
@@ -489,25 +554,20 @@ fn spawn_chat_stderr_reader(stderr: tokio::process::ChildStderr) {
     });
 }
 
-/// Take user-message strings from clients, wrap them in the stream-json input
-/// envelope, and write to the child's stdin as one NDJSON line.
+/// Serialize each [`ChatControl`] frame into one NDJSON line and write to
+/// the runner's stdin. The runner reads `{"kind":"...", ...}` lines and
+/// drives the SDK accordingly. Closes the child's stdin when the channel
+/// closes (the runner exits on EOF).
 fn spawn_chat_stdin_writer(
     mut stdin: ChildStdin,
-    mut rx: mpsc::UnboundedReceiver<String>,
+    mut rx: mpsc::UnboundedReceiver<ChatControl>,
 ) {
     tokio::spawn(async move {
-        while let Some(content) = rx.recv().await {
-            // Match the Anthropic API user-message shape used by the SDK.
-            // The exact stream-json input wire shape isn't publicly documented;
-            // if Claude rejects this we'll iterate.
-            let envelope = serde_json::json!({
-                "type": "user",
-                "message": { "role": "user", "content": content }
-            });
-            let line = match serde_json::to_string(&envelope) {
+        while let Some(ctrl) = rx.recv().await {
+            let line = match serde_json::to_string(&ctrl) {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!(error = %e, "encode user envelope failed");
+                    tracing::warn!(error = %e, "encode ChatControl failed");
                     continue;
                 }
             };
@@ -524,6 +584,8 @@ fn spawn_chat_stdin_writer(
                 break;
             }
         }
+        // Channel closed (e.g. ClientMsg::Kill dropped the sender). Drop
+        // stdin so the runner sees EOF and exits cleanly.
     });
 }
 
@@ -563,8 +625,7 @@ async fn accept_chat_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<ChatEvt>,
     buffer: SharedEventBuffer,
-    stdin_tx: mpsc::UnboundedSender<String>,
-    child_pid: Arc<AtomicI32>,
+    stdin_tx: mpsc::UnboundedSender<ChatControl>,
 ) {
     loop {
         match listener.accept().await {
@@ -572,10 +633,9 @@ async fn accept_chat_loop(
                 let event_rx = event_tx.subscribe();
                 let buffer = buffer.clone();
                 let stdin_tx = stdin_tx.clone();
-                let child_pid = child_pid.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_chat_client(sock, event_rx, buffer, stdin_tx, child_pid).await
+                        handle_chat_client(sock, event_rx, buffer, stdin_tx).await
                     {
                         tracing::debug!(error = %e, "chat client ended");
                     }
@@ -663,7 +723,9 @@ async fn handle_client(
                 tracing::info!("client requested Kill; signaling child");
                 kill_child(&master, &killer);
             }
-            ClientMsg::ChatUserMessage { .. } | ClientMsg::ChatStop => {
+            ClientMsg::ChatUserMessage { .. }
+            | ClientMsg::ChatStop
+            | ClientMsg::AnswerQuestion { .. } => {
                 // Wrong mode — ignore quietly. Server should never send chat-
                 // mode frames to a terminal-mode daemon.
                 tracing::debug!("ignoring chat-mode frame in terminal mode");
@@ -681,8 +743,7 @@ async fn handle_chat_client(
     sock: UnixStream,
     mut event_rx: broadcast::Receiver<ChatEvt>,
     buffer: SharedEventBuffer,
-    stdin_tx: mpsc::UnboundedSender<String>,
-    child_pid: Arc<AtomicI32>,
+    stdin_tx: mpsc::UnboundedSender<ChatControl>,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
 
@@ -730,7 +791,20 @@ async fn handle_chat_client(
         };
         match msg {
             ClientMsg::ChatUserMessage { content } => {
-                if stdin_tx.send(content).is_err() {
+                if stdin_tx.send(ChatControl::UserMessage { content }).is_err() {
+                    break;
+                }
+            }
+            ClientMsg::ChatStop => {
+                if stdin_tx.send(ChatControl::Stop).is_err() {
+                    break;
+                }
+            }
+            ClientMsg::AnswerQuestion { question_id, answer } => {
+                if stdin_tx
+                    .send(ChatControl::AnswerQuestion { question_id, answer })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -738,24 +812,12 @@ async fn handle_chat_client(
                 // Ignore re-attach on a live connection.
             }
             ClientMsg::Kill => {
-                tracing::info!("client requested Kill in chat mode");
-                // No PTY to signal; drop the stdin sender to EOF the child.
-                // The child-waiter then broadcasts Exit and we shut down.
+                tracing::info!("client requested Kill in chat mode; closing runner stdin");
+                // Drop the stdin sender → writer task drops the ChildStdin →
+                // runner sees EOF and exits its query() loop. Child-waiter
+                // then broadcasts Exit and we shut down.
                 drop(stdin_tx);
                 break;
-            }
-            ClientMsg::ChatStop => {
-                let pid = child_pid.load(Ordering::SeqCst);
-                if pid > 0 {
-                    if let Err(e) = nix::sys::signal::kill(
-                        nix::unistd::Pid::from_raw(pid),
-                        nix::sys::signal::Signal::SIGINT,
-                    ) {
-                        tracing::warn!(error = %e, pid, "chat stop SIGINT failed");
-                    } else {
-                        tracing::info!(pid, "chat stop SIGINT delivered");
-                    }
-                }
             }
             // Wrong-mode frames — quietly ignored.
             ClientMsg::Stdin(_) | ClientMsg::Resize { .. } => {
@@ -819,3 +881,39 @@ fn apply_resize(master: &SharedMaster, cols: u16, rows: u16) {
 
 #[allow(dead_code)]
 fn _ensure_is_path(_p: &Path) {} // placate some lints on older toolchains
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_control_user_message_serialization() {
+        let frame = ChatControl::UserMessage {
+            content: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert_eq!(json, r#"{"kind":"user_message","content":"hello"}"#);
+    }
+
+    #[test]
+    fn chat_control_stop_serialization() {
+        let frame = ChatControl::Stop;
+        let json = serde_json::to_string(&frame).unwrap();
+        assert_eq!(json, r#"{"kind":"stop"}"#);
+    }
+
+    #[test]
+    fn chat_control_answer_question_serialization() {
+        let qid =
+            Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
+        let frame = ChatControl::AnswerQuestion {
+            question_id: qid,
+            answer: "ok".to_string(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"answer_question","question_id":"6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60","answer":"ok"}"#
+        );
+    }
+}
