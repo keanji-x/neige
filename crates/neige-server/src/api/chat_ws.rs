@@ -243,19 +243,36 @@ async fn handle_ws(
                         // A second attach on a live connection is a no-op.
                     }
                     Ok(WsClientMsg::AnswerQuestion { question_id, answer }) => {
-                        let mut pending_lock = pending.lock().await;
-                        match pending_lock.remove(&(id, question_id)) {
+                        // Dispatch order: in-Rust `pending_questions`
+                        // registry takes priority. The MCP `ask_question`
+                        // tool registers a oneshot keyed by
+                        // (session_id, question_id) when an inner claude
+                        // self-asks; resolving that oneshot wakes the
+                        // tool call up with the user's answer.
+                        //
+                        // If no oneshot matches, the question must have
+                        // come from the runner's canUseTool callback (the
+                        // sidecar's AskUserQuestion replacement). Forward
+                        // the answer to the daemon, which relays it to the
+                        // runner so the in-flight tool call can resolve.
+                        // Unknown-to-both ids fall through and the runner
+                        // logs a debug; this is fine because dialogs that
+                        // expire on either side are best-effort.
+                        let taken = {
+                            let mut pending_lock = pending.lock().await;
+                            pending_lock.remove(&(id, question_id))
+                        };
+                        match taken {
                             Some(tx) => {
                                 // Best-effort: receiver may have been dropped
                                 // (tool call timed out or was cancelled).
                                 let _ = tx.send(answer);
                             }
                             None => {
-                                tracing::debug!(
-                                    session = %id,
-                                    question_id = %question_id,
-                                    "AnswerQuestion for unknown id (already answered or expired)"
-                                );
+                                let _ = sender.send(ClientMsg::AnswerQuestion {
+                                    question_id,
+                                    answer,
+                                });
                             }
                         }
                     }

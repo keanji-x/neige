@@ -427,8 +427,21 @@ async fn main() {
         internal_token.clone(),
         cli.no_mcp_inject,
     ));
+    // Resolve the chat-mode runner CLI once at startup so every chat
+    // session create / resume sees the same path. NEIGE_RUNNER_PATH wins
+    // over the workspace fallback; see `resolve_runner_path` for the full
+    // resolution order.
+    let runner_path = conversation::resolve_runner_path();
+    tracing::info!(path = %runner_path.display(), "chat runner path resolved");
+    let runner = Some(conversation::RunnerConfig {
+        path: runner_path,
+    });
     let state = api::AppState {
-        manager: conversation::new_shared_manager_with_inject(&project_cwd, mcp_inject),
+        manager: conversation::new_shared_manager_with_config(
+            &project_cwd,
+            mcp_inject,
+            runner,
+        ),
         auth: auth_cfg.clone(),
         pending_questions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
