@@ -8,6 +8,9 @@ web-mobile/node_modules
 web-mobile/dist
 packages/*/node_modules
 
+# Vitest cache (created at repo root by `vitest run`)
+.vite/
+
 # Old frontend
 frontend/
 
