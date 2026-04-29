@@ -82,6 +82,7 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
   const [multiPicks, setMultiPicks] = useState<Record<number, Set<string>>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [submitted, setSubmitted] = useState<string | null>(null);
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
   if (!parsed) {
     return (
@@ -123,15 +124,27 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
   const submit = () => {
     if (!answerQuestion || submitted !== null) return;
     const built = buildAnswers();
-    if (!built) return;
-    setSubmitted(summarizeAnswers(built));
-    answerQuestion(parsed.question_id, built);
+    if (!built) {
+      setAttemptedSubmit(true);
+      return;
+    }
+    if (answerQuestion(parsed.question_id, built)) {
+      setAttemptedSubmit(false);
+      setSubmitted(summarizeAnswers(built));
+    }
   };
 
   const canSubmit = canAnswer && buildAnswers() !== null;
 
   const toggleMulti = (qi: number, label: string) => {
     if (!canAnswer) return;
+    setAttemptedSubmit(false);
+    setDrafts((prev) => {
+      if (!prev[qi]) return prev;
+      const next = { ...prev };
+      delete next[qi];
+      return next;
+    });
     setMultiPicks((prev) => {
       const next = { ...prev };
       const set = new Set(next[qi] ?? []);
@@ -141,6 +154,39 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
       return next;
     });
   };
+
+  const chooseSingle = (qi: number, label: string) => {
+    if (!canAnswer) return;
+    setAttemptedSubmit(false);
+    setDrafts((prev) => {
+      if (!prev[qi]) return prev;
+      const next = { ...prev };
+      delete next[qi];
+      return next;
+    });
+    setSinglePicks((prev) => ({ ...prev, [qi]: label }));
+  };
+
+  const updateDraft = (qi: number, value: string) => {
+    setAttemptedSubmit(false);
+    setDrafts((prev) => ({ ...prev, [qi]: value }));
+    setSinglePicks((prev) => {
+      if (!prev[qi]) return prev;
+      const next = { ...prev };
+      delete next[qi];
+      return next;
+    });
+    setMultiPicks((prev) => {
+      if (!prev[qi]?.size) return prev;
+      const next = { ...prev };
+      delete next[qi];
+      return next;
+    });
+  };
+
+  const statusTone = submitted !== null ? 'green' : canAnswer ? 'amber' : 'gray';
+  const statusLabel =
+    submitted !== null ? 'answered' : canAnswer ? 'waiting for your answer' : 'read-only';
 
   return (
     <Box
@@ -154,12 +200,14 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
       }}
     >
       <Flex direction="column" gap="2">
-        <Flex gap="2" align="center">
-          <Badge color="amber" variant="soft">
-            ask
+        <Flex gap="2" align="center" justify="between" wrap="wrap">
+          <Badge color={statusTone} variant="soft">
+            {statusLabel}
           </Badge>
           <Text size="1" color="gray">
-            The session is asking you to answer.
+            {submitted === null
+              ? 'The session is asking you to answer.'
+              : 'Your answer was sent to the session.'}
           </Text>
         </Flex>
         {parsed.questions.map((q, qi) => {
@@ -167,6 +215,11 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
           const multiSet = multiPicks[qi] ?? new Set<string>();
           return (
             <Flex key={`${qi}:${q.question}`} direction="column" gap="2">
+              {parsed.questions.length > 1 && (
+                <Text size="1" color="gray">
+                  Question {qi + 1} of {parsed.questions.length}
+                </Text>
+              )}
               {q.header && (
                 <Text size="1" color="gray" style={{ fontVariant: 'small-caps' }}>
                   {q.header}
@@ -191,13 +244,14 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
                         onClick={() =>
                           q.multiSelect
                             ? toggleMulti(qi, opt.label)
-                            : setSinglePicks((prev) => ({ ...prev, [qi]: opt.label }))
+                            : chooseSingle(qi, opt.label)
                         }
                         style={{
                           height: 'auto',
                           padding: '8px 10px',
                           justifyContent: 'flex-start',
                           textAlign: 'left',
+                          whiteSpace: 'normal',
                         }}
                       >
                         <Flex direction="column" gap="1" style={{ width: '100%' }}>
@@ -220,16 +274,15 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
                 <TextArea
                   placeholder="Type a different answer..."
                   value={drafts[qi] ?? ''}
-                  onChange={(e) =>
-                    setDrafts((prev) => ({ ...prev, [qi]: e.target.value }))
-                  }
+                  onChange={(e) => updateDraft(qi, e.target.value)}
                   onKeyDown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                       e.preventDefault();
                       submit();
                     }
                   }}
-                  style={{ minHeight: 56 }}
+                  resize="none"
+                  style={{ minHeight: 56, maxHeight: 140, overflowY: 'auto' }}
                 />
               )}
             </Flex>
@@ -237,9 +290,16 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
         })}
 
         {canAnswer && (
-          <Button onClick={submit} disabled={!canSubmit} style={{ alignSelf: 'flex-start' }}>
-            Submit answer
-          </Button>
+          <Flex direction="column" gap="1" align="start">
+            <Button onClick={submit} disabled={!canSubmit}>
+              Submit answer
+            </Button>
+            {(attemptedSubmit || !canSubmit) && (
+              <Text size="1" color="gray">
+                Answer all questions to continue.
+              </Text>
+            )}
+          </Flex>
         )}
 
         {submitted !== null && (

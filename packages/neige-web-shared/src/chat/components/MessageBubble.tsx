@@ -14,7 +14,7 @@ import { ToolUseBlock } from './ToolUseBlock';
 interface MessageBubbleProps {
   message: ChatMessage;
   toolResults: ToolResultsById;
-  respond: (text: string) => void;
+  respond: (text: string) => boolean | void;
   /**
    * If true and the message is a user turn, show a pencil that flips the
    * bubble into an inline edit field. Submit calls respond() with the new
@@ -60,7 +60,7 @@ function UserBubble({
 }: {
   blocks: ContentBlock[];
   canEdit?: boolean;
-  respond: (text: string) => void;
+  respond: (text: string) => boolean | void;
 }) {
   const text = blocks
     .map((b) => {
@@ -81,8 +81,9 @@ function UserBubble({
   const onSave = () => {
     const trimmed = draft.trim();
     if (!trimmed) return;
-    respond(trimmed);
-    setEditing(false);
+    if (respond(trimmed) !== false) {
+      setEditing(false);
+    }
   };
   const onCancel = () => setEditing(false);
 
@@ -117,7 +118,7 @@ function UserBubble({
               Cancel
             </Button>
             <Button size="1" onClick={onSave} disabled={!draft.trim()}>
-              Send edit
+              Send as new message
             </Button>
           </Flex>
         </Box>

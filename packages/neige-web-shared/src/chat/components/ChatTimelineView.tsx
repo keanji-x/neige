@@ -22,7 +22,7 @@ import { MessageBubble } from './MessageBubble';
 interface ChatTimelineViewProps {
   timeline: ChatTimeline;
   toolResults: ToolResultsById;
-  respond: (text: string) => void;
+  respond: (text: string) => boolean | void;
   onAnswerQuestion?: AnswerQuestionHandler;
   /**
    * When true, the most recent user message gets a pencil affordance for

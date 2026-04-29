@@ -12,9 +12,12 @@ import { ComposeBox } from './ComposeBox';
 
 interface ChatViewProps {
   events: NeigeEvent[];
-  onSubmit?: (text: string) => void;
+  onSubmit?: (text: string) => boolean;
   onStop?: () => void;
   isGenerating?: boolean;
+  canSend?: boolean;
+  composePlaceholder?: string;
+  composeStatusText?: string;
   /**
    * Optional. Wired by ChatPanel when the chat WS is live so dialog
    * passthrough renderers (`neige.ask_user_question`) can reply. Static
@@ -26,9 +29,18 @@ interface ChatViewProps {
 
 const STICK_THRESHOLD_PX = 120;
 
-export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuestion }: ChatViewProps) {
+export function ChatView({
+  events,
+  onSubmit,
+  onStop,
+  isGenerating,
+  canSend = true,
+  composePlaceholder,
+  composeStatusText,
+  onAnswerQuestion,
+}: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
-  const respond = onSubmit ?? (() => {});
+  const respond = onSubmit ?? (() => false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -88,7 +100,7 @@ export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuest
           {timeline.messages.length === 0 && (
             <Flex justify="center" py="6">
               <Text size="2" color="gray">
-                No messages yet.
+                Start a message to Claude.
               </Text>
             </Flex>
           )}
@@ -113,11 +125,17 @@ export function ChatView({ events, onSubmit, onStop, isGenerating, onAnswerQuest
 
       <ComposeBox
         onSubmit={(text) => {
-          if (onSubmit) onSubmit(text);
-          else console.log('[ChatView] submit:', text);
+          if (!onSubmit) {
+            console.log('[ChatView] submit:', text);
+            return false;
+          }
+          return onSubmit(text);
         }}
         onStop={onStop}
         isGenerating={isGenerating}
+        canSubmit={canSend}
+        placeholder={composePlaceholder}
+        statusText={composeStatusText}
       />
     </Flex>
   );

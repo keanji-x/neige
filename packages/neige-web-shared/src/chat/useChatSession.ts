@@ -41,15 +41,15 @@ export interface UseChatSessionApi {
   status: ChatSessionStatus;
   /** True when the most recent assistant message hasn't yet emitted message_stop. */
   isGenerating: boolean;
-  /** Send a user message. No-op if WS not open. */
-  sendMessage: (content: string) => void;
+  /** Send a user message. Returns false if WS is not open. */
+  sendMessage: (content: string) => boolean;
   /** Interrupt the current claude turn through the chat runner. No-op if WS not open. */
   stop: () => void;
   /**
    * Resolve a server-side `ask_question` self-ask dialog. Sends an
    * `answer_question` WS frame; the server unblocks the awaiting MCP tool
-   * call. No-op if WS not open (the MCP call will keep waiting; the user
-   * can retry once reconnected).
+   * call. Returns false if WS is not open (the MCP call will keep waiting;
+   * the user can retry once reconnected).
    */
   answerQuestion: AnswerQuestionHandler;
 }
@@ -201,7 +201,7 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       // TODO(queue): hold the message until the socket is open / reattaches.
-      return;
+      return false;
     }
     ws.send(JSON.stringify({ type: 'user_message', content }));
     // Optimistic local render. Claude only echoes the user turn back on
@@ -214,6 +214,7 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
       content: [{ type: 'text', text: content }],
     };
     setEvents((prev) => [...prev, optimistic]);
+    return true;
   }, []);
 
   const stop = useCallback(() => {
@@ -224,8 +225,9 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
 
   const answerQuestion = useCallback((questionId: string, answers: QuestionAnswers) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     ws.send(JSON.stringify({ type: 'answer_question', question_id: questionId, answers }));
+    return true;
   }, []);
 
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);

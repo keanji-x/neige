@@ -9,10 +9,24 @@ interface ChatPanelProps {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  connecting: 'connecting…',
+  connecting: 'connecting...',
   open: 'connected',
   closed: 'disconnected',
-  reconnecting: 'reconnecting…',
+  reconnecting: 'reconnecting...',
+};
+
+const COMPOSE_STATUS: Record<string, string> = {
+  connecting: 'Connecting. Drafts stay here.',
+  open: 'Connected',
+  closed: 'Session closed. Draft preserved.',
+  reconnecting: 'Reconnecting. Drafts stay here.',
+};
+
+const COMPOSE_PLACEHOLDER: Record<string, string> = {
+  connecting: 'Write a draft while the chat connects...',
+  open: 'Message Claude...',
+  closed: 'Session is closed',
+  reconnecting: 'Write a draft while the chat reconnects...',
 };
 
 export function ChatPanel({ sessionId }: ChatPanelProps) {
@@ -35,9 +49,12 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         onSubmit={sendMessage}
         onStop={stop}
         isGenerating={isGenerating}
-        onAnswerQuestion={answerQuestion}
+        canSend={status === 'open'}
+        composePlaceholder={COMPOSE_PLACEHOLDER[status] ?? 'Message Claude...'}
+        composeStatusText={COMPOSE_STATUS[status] ?? status}
+        onAnswerQuestion={status === 'open' ? answerQuestion : undefined}
       />
-      <div className={`chat-status-chip chat-status-${status}`}>
+      <div className={`chat-status-chip chat-status-${status}`} role="status" aria-live="polite">
         {STATUS_LABELS[status] ?? status}
       </div>
     </div>
