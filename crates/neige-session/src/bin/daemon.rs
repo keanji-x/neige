@@ -20,11 +20,11 @@
 //!   frames sent the other direction are NDJSON lines on the runner's
 //!   stdin: `{"kind":"user_message","content":...}`,
 //!   `{"kind":"stop"}`, or
-//!   `{"kind":"answer_question","question_id":...,"answer":...}`.
+//!   `{"kind":"answer_question","question_id":...,"answers":{...}}`.
 //!
 //! Both modes survive all client disconnects; both exit when the child does.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,10 @@ enum Mode {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "neige-session-daemon", about = "Per-session supervisor for neige")]
+#[command(
+    name = "neige-session-daemon",
+    about = "Per-session supervisor for neige"
+)]
 struct Cli {
     /// Session ID. Used for logging and (by convention) socket path.
     #[arg(long)]
@@ -333,15 +336,17 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
 /// Wire shape (one NDJSON line per frame, opaque to anyone but the
 /// runner): `{"kind":"user_message","content":"..."}`,
 /// `{"kind":"stop"}`,
-/// `{"kind":"answer_question","question_id":"<uuid>","answer":"..."}`.
+/// `{"kind":"answer_question","question_id":"<uuid>","answers":{...}}`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ChatControl {
-    UserMessage { content: String },
+    UserMessage {
+        content: String,
+    },
     Stop,
     AnswerQuestion {
         question_id: Uuid,
-        answer: String,
+        answers: HashMap<String, String>,
     },
 }
 
@@ -383,12 +388,21 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         // handle must not kill the running child.
         .kill_on_drop(false);
 
-    let mut child = cmd.spawn().map_err(|e| {
-        anyhow::anyhow!("failed to spawn `node {}`: {e}", runner_path.display())
-    })?;
-    let child_stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("missing child stdin"))?;
-    let child_stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
-    let child_stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing child stderr"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn `node {}`: {e}", runner_path.display()))?;
+    let child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing child stdin"))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing child stderr"))?;
 
     let buffer: SharedEventBuffer = Arc::new(Mutex::new(EventBuffer::new(cli.buffer_bytes)));
     let (event_tx, _) = broadcast::channel::<ChatEvt>(2048);
@@ -558,10 +572,7 @@ fn spawn_chat_stderr_reader(stderr: tokio::process::ChildStderr) {
 /// the runner's stdin. The runner reads `{"kind":"...", ...}` lines and
 /// drives the SDK accordingly. Closes the child's stdin when the channel
 /// closes (the runner exits on EOF).
-fn spawn_chat_stdin_writer(
-    mut stdin: ChildStdin,
-    mut rx: mpsc::UnboundedReceiver<ChatControl>,
-) {
+fn spawn_chat_stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<ChatControl>) {
     tokio::spawn(async move {
         while let Some(ctrl) = rx.recv().await {
             let line = match serde_json::to_string(&ctrl) {
@@ -634,9 +645,7 @@ async fn accept_chat_loop(
                 let buffer = buffer.clone();
                 let stdin_tx = stdin_tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_chat_client(sock, event_rx, buffer, stdin_tx).await
-                    {
+                    if let Err(e) = handle_chat_client(sock, event_rx, buffer, stdin_tx).await {
                         tracing::debug!(error = %e, "chat client ended");
                     }
                 });
@@ -800,9 +809,15 @@ async fn handle_chat_client(
                     break;
                 }
             }
-            ClientMsg::AnswerQuestion { question_id, answer } => {
+            ClientMsg::AnswerQuestion {
+                question_id,
+                answers,
+            } => {
                 if stdin_tx
-                    .send(ChatControl::AnswerQuestion { question_id, answer })
+                    .send(ChatControl::AnswerQuestion {
+                        question_id,
+                        answers,
+                    })
                     .is_err()
                 {
                     break;
@@ -841,10 +856,7 @@ fn kill_child(
     master: &SharedMaster,
     killer: &Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
 ) {
-    let pgid = master
-        .lock()
-        .ok()
-        .and_then(|m| m.process_group_leader());
+    let pgid = master.lock().ok().and_then(|m| m.process_group_leader());
     if let Some(pgid) = pgid {
         // SAFETY: killpg-style negative pid targets the process group with
         // the matching id. We created this pgid via setsid at spawn time.
@@ -904,16 +916,15 @@ mod tests {
 
     #[test]
     fn chat_control_answer_question_serialization() {
-        let qid =
-            Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
+        let qid = Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
         let frame = ChatControl::AnswerQuestion {
             question_id: qid,
-            answer: "ok".to_string(),
+            answers: HashMap::from([("Proceed?".to_string(), "ok".to_string())]),
         };
         let json = serde_json::to_string(&frame).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"answer_question","question_id":"6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60","answer":"ok"}"#
+            r#"{"kind":"answer_question","question_id":"6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60","answers":{"Proceed?":"ok"}}"#
         );
     }
 }

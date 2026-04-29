@@ -6,11 +6,11 @@ import { dispatchLine, startControlReader, type ControlHandlers } from '../src/c
 function makeHandlers(): ControlHandlers & {
   userMessages: string[];
   stops: number;
-  answers: Array<[string, string]>;
+  answers: Array<[string, Record<string, string>]>;
   eofs: number;
 } {
   const userMessages: string[] = [];
-  const answers: Array<[string, string]> = [];
+  const answers: Array<[string, Record<string, string>]> = [];
   let stops = 0;
   let eofs = 0;
   return {
@@ -28,8 +28,8 @@ function makeHandlers(): ControlHandlers & {
     onStop() {
       stops += 1;
     },
-    onAnswerQuestion(qid, answer) {
-      answers.push([qid, answer]);
+    onAnswerQuestion(qid, answerMap) {
+      answers.push([qid, answerMap]);
     },
     onEof() {
       eofs += 1;
@@ -52,8 +52,8 @@ describe('dispatchLine', () => {
 
   it('routes answer_question frames', () => {
     const h = makeHandlers();
-    dispatchLine('{"kind":"answer_question","question_id":"q1","answer":"yes"}', h);
-    expect(h.answers).toEqual([['q1', 'yes']]);
+    dispatchLine('{"kind":"answer_question","question_id":"q1","answers":{"Proceed?":"yes"}}', h);
+    expect(h.answers).toEqual([['q1', { 'Proceed?': 'yes' }]]);
   });
 
   it('drops malformed JSON without throwing', () => {
@@ -85,7 +85,26 @@ describe('dispatchLine', () => {
   it('drops answer_question with non-string fields', () => {
     const h = makeHandlers();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    dispatchLine('{"kind":"answer_question","question_id":1,"answer":"x"}', h);
+    dispatchLine('{"kind":"answer_question","question_id":1,"answers":{"Proceed?":"yes"}}', h);
+    expect(h.answers).toEqual([]);
+    stderr.mockRestore();
+  });
+
+  it('drops answer_question missing answers map', () => {
+    const h = makeHandlers();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    dispatchLine('{"kind":"answer_question","question_id":"q1"}', h);
+    expect(h.answers).toEqual([]);
+    stderr.mockRestore();
+  });
+
+  it('drops answer_question with non-string answers map values', () => {
+    const h = makeHandlers();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    dispatchLine(
+      '{"kind":"answer_question","question_id":"q1","answers":{"Proceed?":1}}',
+      h,
+    );
     expect(h.answers).toEqual([]);
     stderr.mockRestore();
   });

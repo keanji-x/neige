@@ -35,7 +35,7 @@ pub async fn handle(ctx: ToolCtx, _args: Args) -> Result<Value, String> {
 pub fn tool() -> Tool {
     Tool::new(
         "stop",
-        "Interrupt the current claude generation (SIGINT). Returns immediately. \
+        "Interrupt the current claude generation. Returns immediately. \
          The in-flight send_message call (if any) will observe a `result` event \
          with terminal_reason=interrupted and unblock with status=stopped.",
         Scope::SelfScoped,

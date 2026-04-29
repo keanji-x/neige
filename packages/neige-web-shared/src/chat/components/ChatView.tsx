@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { deriveTimeline } from '../derive';
 import type { NeigeEvent } from '../types';
+import type { AnswerQuestionHandler } from '../types';
 import { ChatTimelineView } from './ChatTimelineView';
 import { ComposeBox } from './ComposeBox';
 
@@ -20,7 +21,7 @@ interface ChatViewProps {
    * mounts (e.g. tests, mockEvents demos) leave it undefined and the
    * dialog renders read-only.
    */
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 const STICK_THRESHOLD_PX = 120;

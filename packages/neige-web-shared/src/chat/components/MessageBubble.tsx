@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { Box, Button, Card, Flex, IconButton, Text, TextArea } from '@radix-ui/themes';
 import { Pencil } from 'lucide-react';
 import type { AssistantBlock, ChatMessage, ChatTimeline, ToolResultsById } from '../derive';
-import type { ContentBlock } from '../types';
+import type { AnswerQuestionHandler, ContentBlock } from '../types';
 import { TextBlock } from './TextBlock';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolUseBlock } from './ToolUseBlock';
@@ -27,7 +27,7 @@ interface MessageBubbleProps {
   subagents?: Record<string, ChatTimeline>;
   /** Forwarded so AskUserQuestion-style cards inside sub-agent timelines
    *  can still post answers back. */
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 export function MessageBubble({
@@ -174,7 +174,7 @@ function AssistantTurn({
   isComplete: boolean;
   respond: (text: string) => void;
   subagents?: Record<string, ChatTimeline>;
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }) {
   return (
     <Box mb="4">

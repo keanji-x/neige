@@ -42,6 +42,9 @@ The server manages session lifecycle — creating, detaching, resuming, and pers
 # Build frontend
 cd web && npm install && npm run build && cd ..
 
+# Build chat runner (required for Chat / Mode B sessions)
+cd runners/neige-chat-runner && npm install && npm run build && cd ../..
+
 # Build and run
 cargo run
 ```
@@ -98,14 +101,19 @@ If not listed, the browser login will fail with `403 origin missing and referer 
 ## Development
 
 ```bash
-# Terminal 1: Rust backend
+# One-time / after runner changes: build the chat runner used by Chat (Mode B)
+cd runners/neige-chat-runner && npm install && npm run build && cd ../..
+
+# Terminal 1: Rust backend on :3030
 cargo run
 
 # Terminal 2: Frontend dev server (with hot reload + API proxy)
 cd web && npm run dev
 ```
 
-Dev server runs on `http://localhost:5173` with API proxied to `:3030`. For faster iteration during frontend work, pass `--no-auth` to the backend.
+Dev server runs on `http://localhost:5173` with API and WebSocket traffic proxied to the backend on `:3030`. For faster iteration during frontend work, pass `--no-auth` to the backend.
+
+Chat sessions use the Node sidecar at `runners/neige-chat-runner/dist/cli.js`. The server resolves it automatically from the workspace when running via `cargo run`; set `NEIGE_RUNNER_PATH=/path/to/cli.js` only if you want to point at a different build.
 
 ## Remote Access
 

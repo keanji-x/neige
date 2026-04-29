@@ -3,7 +3,7 @@
 
 import type { ReactNode } from 'react';
 import type { ChatTimeline, ToolResultsById } from '../derive';
-import type { ToolResultContent } from '../types';
+import type { AnswerQuestionHandler, ToolResultContent } from '../types';
 
 export interface ToolRendererProps {
   name: string;
@@ -36,7 +36,7 @@ export interface ToolRendererProps {
    * sub-agent can still post answers back to the chat session. Optional
    * — undefined in static / read-only mounts.
    */
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 export type ToolRenderer = (props: ToolRendererProps) => ReactNode;

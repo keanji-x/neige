@@ -13,6 +13,8 @@
 
 pub mod stream_json;
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
@@ -40,16 +42,19 @@ pub enum ClientMsg {
     /// Ignored in terminal mode.
     ChatUserMessage { content: String },
     /// Interrupt an in-flight chat turn. Daemon writes
-    /// `{"kind":"stop"}` to the runner's stdin; the runner calls the SDK's
-    /// abort path. Ignored in terminal mode.
+    /// `{"kind":"stop"}` to the runner's stdin; the runner calls the SDK
+    /// interrupt API. Ignored in terminal mode.
     ChatStop,
     /// Resolve an `AskUserQuestion` posed by the SDK's `canUseTool`
     /// callback. Bridges WS frontend → daemon → runner stdin so the
     /// runner-side `canUseTool` promise can resolve and the agent loop
     /// proceeds. Daemon writes
-    /// `{"kind":"answer_question","question_id":"<uuid>","answer":"..."}`
-    /// verbatim to the runner. Ignored in terminal mode.
-    AnswerQuestion { question_id: Uuid, answer: String },
+    /// `{"kind":"answer_question","question_id":"<uuid>","answers": {...}}`
+    /// to the runner. Ignored in terminal mode.
+    AnswerQuestion {
+        question_id: Uuid,
+        answers: HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,16 +124,24 @@ mod tests {
         let qid = Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
         let original = ClientMsg::AnswerQuestion {
             question_id: qid,
-            answer: "the second one".to_string(),
+            answers: HashMap::from([(
+                "Which option?".to_string(),
+                "the second one".to_string(),
+            )]),
         };
-        let encoded =
-            bincode::serde::encode_to_vec(&original, bincode_config()).expect("encode");
+        let encoded = bincode::serde::encode_to_vec(&original, bincode_config()).expect("encode");
         let (decoded, _): (ClientMsg, _) =
             bincode::serde::decode_from_slice(&encoded, bincode_config()).expect("decode");
         match decoded {
-            ClientMsg::AnswerQuestion { question_id, answer } => {
+            ClientMsg::AnswerQuestion {
+                question_id,
+                answers,
+            } => {
                 assert_eq!(question_id, qid);
-                assert_eq!(answer, "the second one");
+                assert_eq!(
+                    answers.get("Which option?").map(String::as_str),
+                    Some("the second one")
+                );
             }
             other => panic!("unexpected variant: {other:?}"),
         }

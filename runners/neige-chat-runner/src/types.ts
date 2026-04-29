@@ -155,4 +155,8 @@ export type NeigeEventType = NeigeEvent['type'];
 export type ControlFrame =
   | { kind: 'user_message'; content: string }
   | { kind: 'stop' }
-  | { kind: 'answer_question'; question_id: string; answer: string };
+  | {
+      kind: 'answer_question';
+      question_id: string;
+      answers: Record<string, string>;
+    };

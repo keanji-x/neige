@@ -146,3 +146,10 @@ export type NeigeEvent =
     };
 
 export type NeigeEventType = NeigeEvent['type'];
+
+export type QuestionAnswers = Record<string, string>;
+
+export type AnswerQuestionHandler = (
+  questionId: string,
+  answers: QuestionAnswers,
+) => void;

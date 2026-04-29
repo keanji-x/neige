@@ -15,6 +15,7 @@
 
 import { Fragment } from 'react';
 import type { ChatTimeline, PassthroughEntry, ToolResultsById } from '../derive';
+import type { AnswerQuestionHandler } from '../types';
 import { DefaultPassthroughCard, lookupRenderer } from '../passthrough';
 import { MessageBubble } from './MessageBubble';
 
@@ -22,7 +23,7 @@ interface ChatTimelineViewProps {
   timeline: ChatTimeline;
   toolResults: ToolResultsById;
   respond: (text: string) => void;
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
   /**
    * When true, the most recent user message gets a pencil affordance for
    * inline edit-and-resend. Disable for sub-agent timelines — sub-agents
@@ -81,7 +82,7 @@ function PassthroughGroup({
 }: {
   entries: PassthroughEntry[];
   insertedAfterMessageIndex: number | null;
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }) {
   const slice = entries.filter(
     (e) => e.insertedAfterMessageIndex === insertedAfterMessageIndex,

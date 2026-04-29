@@ -353,7 +353,12 @@ describe('mapSdkMessage — user / tool_result', () => {
       SID,
     );
     expect(out).toEqual<NeigeEvent[]>([
-      { type: 'user_message', session_id: SID, content: [{ type: 'text', text: 'hello' }] },
+      {
+        type: 'user_message',
+        session_id: SID,
+        content: [{ type: 'text', text: 'hello' }],
+        parent_tool_use_id: null,
+      },
     ]);
   });
 
@@ -378,6 +383,7 @@ describe('mapSdkMessage — user / tool_result', () => {
         tool_use_id: 'tu1',
         content: 'ok',
         is_error: false,
+        parent_tool_use_id: null,
       },
       {
         type: 'tool_result',
@@ -385,6 +391,7 @@ describe('mapSdkMessage — user / tool_result', () => {
         tool_use_id: 'tu2',
         content: 'err',
         is_error: true,
+        parent_tool_use_id: null,
       },
     ]);
   });
@@ -411,6 +418,7 @@ describe('mapSdkMessage — user / tool_result', () => {
           { type: 'text', text: 'before' },
           { type: 'image', source: { type: 'base64', data: 'AAA' } },
         ],
+        parent_tool_use_id: null,
       },
     ]);
   });

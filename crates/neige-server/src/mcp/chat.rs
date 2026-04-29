@@ -174,11 +174,10 @@ impl TurnAggregator {
             "text": std::mem::take(&mut self.text_buf),
             "tool_calls": std::mem::take(&mut self.tool_calls),
             "result": result_event,
-            // Reserved slot for A2A-style human-in-the-loop. Today the
-            // daemon disables the AskUserQuestion built-in (see
-            // build_chat_argv); when we wire an MCP-based replacement
-            // this field will surface the pending question and the
-            // orchestrator can call answer_question to resolve it.
+            // Reserved slot for A2A-style human-in-the-loop in cross-session
+            // send_message flows. Runner-side AskUserQuestion prompts are
+            // handled on the live chat WebSocket and don't currently surface
+            // through this response shape.
             "pending_question": Value::Null,
         })
     }

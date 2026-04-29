@@ -16,7 +16,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ChatTimeline, ToolResultsById } from '../derive';
-import type { ToolResultContent } from '../types';
+import type { AnswerQuestionHandler, ToolResultContent } from '../types';
 import { ToolResultBlock } from './ToolResultBlock';
 import { DefaultToolCard, lookupToolRenderer } from '../tools';
 
@@ -37,7 +37,7 @@ interface ToolUseBlockProps {
   toolResults?: ToolResultsById;
   /** AskUserQuestion answer dispatcher; passed through to renderers that
    *  may host interactive cards inside their sub-agent timeline. */
-  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 const ICONS: Record<string, LucideIcon> = {

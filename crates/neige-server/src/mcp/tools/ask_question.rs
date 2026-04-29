@@ -48,8 +48,9 @@ pub async fn handle(ctx: ToolCtx, args: Args) -> Result<Value, String> {
             framed.push_str(&format!("- {}\n", o));
         }
     }
-    framed
-        .push_str("\n\n(This was sent via the ask_question MCP tool — the caller is waiting for your reply.)");
+    framed.push_str(
+        "\n\n(This was sent via the ask_question MCP tool — the caller is waiting for your reply.)",
+    );
 
     send_and_wait(ctx.manager(), target, framed).await
 }
@@ -64,7 +65,17 @@ async fn self_ask(
     options: Option<Vec<String>>,
 ) -> Result<Value, String> {
     let question_id = Uuid::new_v4();
-    let (tx, rx) = oneshot::channel::<String>();
+    let (tx, rx) = oneshot::channel::<std::collections::HashMap<String, String>>();
+    let option_labels = options.unwrap_or_default();
+    let option_objects: Vec<Value> = option_labels
+        .iter()
+        .map(|label| {
+            json!({
+                "label": label,
+                "description": "",
+            })
+        })
+        .collect();
 
     // Register the pending question BEFORE injecting the event — that way
     // a fast frontend can't deliver the answer before we're ready to
@@ -83,9 +94,14 @@ async fn self_ask(
         "session_id": target.to_string(),
         "kind": "neige.ask_user_question",
         "payload": {
+            "schema": "neige.ask_user_question.v1",
+            "source": "mcp_self_ask",
             "question_id": question_id.to_string(),
-            "question": question,
-            "options": options.unwrap_or_default(),
+            "questions": [{
+                "question": question.clone(),
+                "multiSelect": false,
+                "options": option_objects,
+            }],
         }
     })
     .to_string();
@@ -108,11 +124,15 @@ async fn self_ask(
     // may walk away and come back hours later, and the sender survives
     // server detach since pending_questions lives on AppState.
     match rx.await {
-        Ok(answer) => Ok(json!({
-            "status": "answered",
-            "question_id": question_id,
-            "answer": answer,
-        })),
+        Ok(answers) => {
+            let answer = summarize_answers(&answers);
+            Ok(json!({
+                "status": "answered",
+                "question_id": question_id,
+                "answer": answer,
+                "answers": answers,
+            }))
+        }
         Err(_) => {
             // Cleanup — usually already done by whoever dropped the sender,
             // but harmless to remove again under the lock.
@@ -121,6 +141,19 @@ async fn self_ask(
             Err("question abandoned (session closed or answerer dropped)".to_string())
         }
     }
+}
+
+fn summarize_answers(answers: &std::collections::HashMap<String, String>) -> String {
+    if answers.len() == 1 {
+        return answers.values().next().cloned().unwrap_or_default();
+    }
+    let mut pairs: Vec<_> = answers.iter().collect();
+    pairs.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    pairs
+        .into_iter()
+        .map(|(question, answer)| format!("{question}: {answer}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn session_id_short(id: Option<Uuid>) -> String {

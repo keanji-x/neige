@@ -20,10 +20,9 @@ pub fn tool() -> Tool {
         "answer_question",
         "Answer a pending `pending_question` from a previous send_message \
          response. Currently a thin wrapper that posts the answer as a follow-up \
-         user message — the AskUserQuestion built-in is disabled in chat-mode \
-         claude until an MCP-native replacement ships, so questions surface as \
-         plain assistant text and answers go back the same way. Returns the same \
-         shape as send_message.",
+         user message. Live web UI AskUserQuestion dialogs are resolved through \
+         the chat WebSocket; this MCP tool is for orchestrator-to-session text \
+         handoffs. Returns the same shape as send_message.",
         Scope::SelfScoped,
         handle,
     )

@@ -1,10 +1,9 @@
 // Renderer for `neige.ask_user_question` passthrough events.
 //
 // Emitted by the server-side MCP `ask_question` tool when an inner claude
-// asks its own session a question (self-ask). The MCP call is blocked on
-// our reply: we collect a free-form answer (or a clicked option) and call
-// `answerQuestion(question_id, answer)` to resolve the server-side oneshot
-// and unblock the tool.
+// asks its own session a question (self-ask), and by the chat runner when
+// the Claude SDK invokes the built-in AskUserQuestion tool. The call is
+// blocked on our reply: we collect answers and call answerQuestion().
 //
 // Stays mounted as a regular passthrough card in the chat stream so the
 // question + chosen answer are visible in conversation history. The
@@ -15,10 +14,22 @@ import { useState } from 'react';
 import { Badge, Box, Button, Flex, Text, TextArea } from '@radix-ui/themes';
 import type { PassthroughRendererProps } from './registry';
 
+interface Option {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+interface Question {
+  question: string;
+  header?: string;
+  multiSelect: boolean;
+  options: Option[];
+}
+
 interface QuestionPayload {
   question_id: string;
-  question: string;
-  options: string[];
+  questions: Question[];
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -29,18 +40,47 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 function parsePayload(input: unknown): QuestionPayload | null {
   const r = asRecord(input);
   if (!r) return null;
-  if (typeof r.question_id !== 'string' || typeof r.question !== 'string') return null;
-  const options = Array.isArray(r.options)
-    ? r.options.filter((o): o is string => typeof o === 'string')
-    : [];
-  return { question_id: r.question_id, question: r.question, options };
+  if (typeof r.question_id !== 'string') return null;
+
+  const parsedQuestions = parseQuestions(r.questions);
+  if (!parsedQuestions) return null;
+  return { question_id: r.question_id, questions: parsedQuestions };
+}
+
+function parseQuestions(input: unknown): Question[] | null {
+  if (!Array.isArray(input) || input.length === 0) return null;
+  const out: Question[] = [];
+  for (const q of input) {
+    const qr = asRecord(q);
+    if (!qr || typeof qr.question !== 'string') return null;
+    const rawOptions = Array.isArray(qr.options) ? qr.options : [];
+    const options: Option[] = [];
+    for (const o of rawOptions) {
+      const or = asRecord(o);
+      if (!or || typeof or.label !== 'string') return null;
+      options.push({
+        label: or.label,
+        description: typeof or.description === 'string' ? or.description : undefined,
+        preview: typeof or.preview === 'string' ? or.preview : undefined,
+      });
+    }
+    out.push({
+      question: qr.question,
+      header: typeof qr.header === 'string' ? qr.header : undefined,
+      multiSelect: typeof qr.multiSelect === 'boolean' ? qr.multiSelect : false,
+      options,
+    });
+  }
+  return out;
 }
 
 export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) {
   const { payload, answerQuestion } = props;
 
   const parsed = parsePayload(payload);
-  const [draft, setDraft] = useState('');
+  const [singlePicks, setSinglePicks] = useState<Record<number, string>>({});
+  const [multiPicks, setMultiPicks] = useState<Record<number, Set<string>>>({});
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [submitted, setSubmitted] = useState<string | null>(null);
 
   if (!parsed) {
@@ -67,12 +107,39 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
   // transcript without a broken submit button.
   const canAnswer = !!answerQuestion && submitted === null;
 
-  const submit = (answer: string) => {
+  const buildAnswers = (): Record<string, string> | null => {
+    const answers: Record<string, string> = {};
+    for (const [qi, q] of parsed.questions.entries()) {
+      const draft = drafts[qi]?.trim();
+      const multi = Array.from(multiPicks[qi] ?? []);
+      const picked = singlePicks[qi];
+      const value = draft || (q.multiSelect ? multi.join(', ') : picked);
+      if (!value) return null;
+      answers[q.question] = value;
+    }
+    return answers;
+  };
+
+  const submit = () => {
     if (!answerQuestion || submitted !== null) return;
-    const trimmed = answer.trim();
-    if (trimmed.length === 0) return;
-    setSubmitted(trimmed);
-    answerQuestion(parsed.question_id, trimmed);
+    const built = buildAnswers();
+    if (!built) return;
+    setSubmitted(summarizeAnswers(built));
+    answerQuestion(parsed.question_id, built);
+  };
+
+  const canSubmit = canAnswer && buildAnswers() !== null;
+
+  const toggleMulti = (qi: number, label: string) => {
+    if (!canAnswer) return;
+    setMultiPicks((prev) => {
+      const next = { ...prev };
+      const set = new Set(next[qi] ?? []);
+      if (set.has(label)) set.delete(label);
+      else set.add(label);
+      next[qi] = set;
+      return next;
+    });
   };
 
   return (
@@ -95,48 +162,84 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
             The session is asking you to answer.
           </Text>
         </Flex>
-        <Text as="div" size="3" weight="medium">
-          {parsed.question}
-        </Text>
+        {parsed.questions.map((q, qi) => {
+          const selected = singlePicks[qi];
+          const multiSet = multiPicks[qi] ?? new Set<string>();
+          return (
+            <Flex key={`${qi}:${q.question}`} direction="column" gap="2">
+              {q.header && (
+                <Text size="1" color="gray" style={{ fontVariant: 'small-caps' }}>
+                  {q.header}
+                </Text>
+              )}
+              <Text as="div" size="3" weight="medium">
+                {q.question}
+              </Text>
 
-        {parsed.options.length > 0 && (
-          <Flex gap="2" wrap="wrap">
-            {parsed.options.map((opt) => (
-              <Button
-                key={opt}
-                variant={submitted === opt ? 'solid' : 'soft'}
-                color={submitted === opt ? undefined : 'gray'}
-                disabled={!canAnswer}
-                onClick={() => submit(opt)}
-              >
-                {opt}
-              </Button>
-            ))}
-          </Flex>
-        )}
+              {q.options.length > 0 && (
+                <Flex direction="column" gap="2">
+                  {q.options.map((opt) => {
+                    const isChosen = q.multiSelect
+                      ? multiSet.has(opt.label)
+                      : selected === opt.label;
+                    return (
+                      <Button
+                        key={opt.label}
+                        variant={isChosen ? 'solid' : 'soft'}
+                        color={isChosen ? undefined : 'gray'}
+                        disabled={!canAnswer}
+                        onClick={() =>
+                          q.multiSelect
+                            ? toggleMulti(qi, opt.label)
+                            : setSinglePicks((prev) => ({ ...prev, [qi]: opt.label }))
+                        }
+                        style={{
+                          height: 'auto',
+                          padding: '8px 10px',
+                          justifyContent: 'flex-start',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <Flex direction="column" gap="1" style={{ width: '100%' }}>
+                          <Text size="2" weight="bold">
+                            {opt.label}
+                          </Text>
+                          {opt.description && (
+                            <Text size="1" color="gray">
+                              {opt.description}
+                            </Text>
+                          )}
+                        </Flex>
+                      </Button>
+                    );
+                  })}
+                </Flex>
+              )}
+
+              {canAnswer && (
+                <TextArea
+                  placeholder="Type a different answer..."
+                  value={drafts[qi] ?? ''}
+                  onChange={(e) =>
+                    setDrafts((prev) => ({ ...prev, [qi]: e.target.value }))
+                  }
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                  style={{ minHeight: 56 }}
+                />
+              )}
+            </Flex>
+          );
+        })}
 
         {canAnswer && (
-          <Flex direction="column" gap="2">
-            <TextArea
-              placeholder="Type your answer (Cmd/Ctrl+Enter to submit)…"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                  e.preventDefault();
-                  submit(draft);
-                }
-              }}
-              style={{ minHeight: 60 }}
-            />
-            <Button
-              onClick={() => submit(draft)}
-              disabled={draft.trim().length === 0}
-              style={{ alignSelf: 'flex-start' }}
-            >
-              Submit answer
-            </Button>
-          </Flex>
+          <Button onClick={submit} disabled={!canSubmit} style={{ alignSelf: 'flex-start' }}>
+            Submit answer
+          </Button>
         )}
 
         {submitted !== null && (
@@ -153,4 +256,10 @@ export function AskUserQuestionPassthroughCard(props: PassthroughRendererProps) 
       </Flex>
     </Box>
   );
+}
+
+function summarizeAnswers(answers: Record<string, string>): string {
+  const entries = Object.entries(answers);
+  if (entries.length === 1) return entries[0]?.[1] ?? '';
+  return entries.map(([question, answer]) => `${question}: ${answer}`).join('\n');
 }

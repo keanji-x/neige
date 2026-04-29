@@ -23,13 +23,14 @@ mod ws;
 ///
 /// Populated by the MCP `ask_question` tool when an inner claude asks its
 /// own session a question (self-target). The chat WS handler resolves the
-/// oneshot when the user types an answer in the dialog. The tool call
-/// awaits the receiver and returns the answer to the caller.
+/// oneshot when the user answers in the dialog. The tool call awaits the
+/// receiver and returns the answer map to the caller.
 ///
 /// Removed on either: success path (caller drains and removes after recv),
 /// session deletion (kill_session sweeps), or sender drop (rx errors out
 /// and the tool errors out cleanly).
-pub type PendingQuestions = Arc<Mutex<HashMap<(Uuid, Uuid), oneshot::Sender<String>>>>;
+pub type PendingQuestions =
+    Arc<Mutex<HashMap<(Uuid, Uuid), oneshot::Sender<HashMap<String, String>>>>>;
 
 #[derive(Clone)]
 pub struct AppState {

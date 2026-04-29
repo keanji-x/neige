@@ -161,79 +161,95 @@ async function main(): Promise<void> {
   // is safe.
   const promptQueue = new AsyncQueue<SDKUserMessage>();
 
+  type AskUserOption = {
+    label: string;
+    description?: string;
+    preview?: string;
+  };
+  type AskUserQuestion = {
+    question: string;
+    header?: string;
+    multiSelect: boolean;
+    options: AskUserOption[];
+  };
+
   // Tracks pending askUserQuestion resolvers keyed by question_id. The
   // control-channel `answer_question` frame resolves the matching entry;
-  // canUseTool then surfaces the user's choice back to claude as the
-  // tool's permission verdict (see askUserQuestion below).
-  const pendingQuestions = new Map<string, (answer: string) => void>();
+  // canUseTool then returns the user's choices to the SDK via
+  // PermissionResult.updatedInput.answers.
+  const pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
 
   /**
    * Surface a structured AskUserQuestion to the browser via a passthrough
    * NeigeEvent and block until the user picks an option (or types a
-   * free-form answer). The shape of the emitted payload matches what
-   * `packages/neige-web-shared/src/chat/passthrough/AskUserQuestionPassthroughCard.tsx`
-   * expects today — `{question_id, question, options: string[]}` — taken
-   * from the FIRST question in the input. Multi-question support is a
-   * follow-up that requires a frontend renderer update; the SDK's input
-   * schema (`AskUserQuestionInput` in `sdk-tools.d.ts`) allows 1-4
-   * questions but the model almost always asks one at a time.
+   * free-form answer). The payload is the chat-mode question schema:
+   * `{ schema, source, question_id, questions }`.
    */
-  const askUserQuestion = (
-    questionText: string,
-    optionLabels: string[],
-  ): Promise<string> => {
+  const askUserQuestion = (questions: AskUserQuestion[]): Promise<Record<string, string>> => {
     const questionId = uuidv4();
-    return new Promise<string>((resolve) => {
+    return new Promise<Record<string, string>>((resolve) => {
       pendingQuestions.set(questionId, resolve);
       emit({
         type: 'passthrough',
         session_id: args.sessionId,
         kind: 'neige.ask_user_question',
         payload: {
+          schema: 'neige.ask_user_question.v1',
+          source: 'sdk',
           question_id: questionId,
-          question: questionText,
-          options: optionLabels,
+          questions,
         },
       });
     });
   };
 
   /**
-   * Pull `{question, options[].label}` out of an AskUserQuestion input,
-   * defensive about partial / malformed shapes (the model occasionally
-   * emits an extra wrapping object; the schema also allows 1-4 nested
-   * questions so we always take the first). Returns null if we can't
-   * find a usable question — caller falls through to the default
-   * permission verdict.
+   * Pull the official `questions[]` shape out of an AskUserQuestion input,
+   * defensive about partial / malformed shapes. Returns null if we can't
+   * find at least one usable question — caller falls through to the
+   * default permission verdict.
    */
   const parseAskUserQuestionInput = (
     input: Record<string, unknown>,
-  ): { question: string; options: string[] } | null => {
+  ): { questions: AskUserQuestion[] } | null => {
     const questions = (input as { questions?: unknown }).questions;
     if (!Array.isArray(questions) || questions.length === 0) return null;
-    const first = questions[0];
-    if (!first || typeof first !== 'object') return null;
-    const q = (first as { question?: unknown }).question;
-    if (typeof q !== 'string' || q.length === 0) return null;
-    const rawOpts = (first as { options?: unknown }).options;
-    const labels: string[] = [];
-    if (Array.isArray(rawOpts)) {
+    const parsed: AskUserQuestion[] = [];
+    for (const raw of questions) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const qr = raw as Record<string, unknown>;
+      const q = qr['question'];
+      if (typeof q !== 'string' || q.length === 0) return null;
+      const rawOpts = qr['options'];
+      if (!Array.isArray(rawOpts)) return null;
+      const options: AskUserOption[] = [];
       for (const o of rawOpts) {
-        if (o && typeof o === 'object') {
-          const label = (o as { label?: unknown }).label;
-          if (typeof label === 'string' && label.length > 0) labels.push(label);
-        }
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+        const or = o as Record<string, unknown>;
+        const label = or['label'];
+        if (typeof label !== 'string' || label.length === 0) return null;
+        options.push({
+          label,
+          description: typeof or['description'] === 'string' ? or['description'] : undefined,
+          preview: typeof or['preview'] === 'string' ? or['preview'] : undefined,
+        });
       }
+      parsed.push({
+        question: q,
+        header: typeof qr['header'] === 'string' ? qr['header'] : undefined,
+        multiSelect: typeof qr['multiSelect'] === 'boolean' ? qr['multiSelect'] : false,
+        options,
+      });
     }
-    return { question: q, options: labels };
+    return { questions: parsed };
   };
 
   // -- canUseTool: intercept AskUserQuestion, allow everything else --------
   //
   // The SDK fires canUseTool before every tool execution, including the
   // built-in `AskUserQuestion`. We use that hook to surface the question
-  // to the browser, await the answer, and return it via deny+message —
-  // claude reads the deny message as the answer text and continues. This
+  // to the browser, await the answer, and return it via the SDK's official
+  // `{ questions, answers }` updatedInput contract. This
   // replaces the old `disallowedTools: ['AskUserQuestion']` workaround:
   // that flag existed because the legacy `--print` harness returned a
   // 17-char placeholder without giving the user a chance to answer.
@@ -246,13 +262,15 @@ async function main(): Promise<void> {
     if (toolName === 'AskUserQuestion') {
       const parsed = parseAskUserQuestionInput(input);
       if (parsed) {
-        const answer = await askUserQuestion(parsed.question, parsed.options);
-        // Deny is the cleanest path for routing the user's answer back to
-        // the model: PermissionResult has no "succeed with this result"
-        // variant, so we hijack the deny message. Phrased as "User
-        // answered: …" so claude reads it as the user's selection rather
-        // than a refusal.
-        return { behavior: 'deny', message: `User answered: ${answer}` };
+        const answers = await askUserQuestion(parsed.questions);
+        return {
+          behavior: 'allow',
+          updatedInput: {
+            ...input,
+            questions: parsed.questions,
+            answers,
+          },
+        };
       }
       // Fall through to allow-all if the input shape didn't match — the
       // built-in tool will then run its placeholder path; not great, but
@@ -280,7 +298,7 @@ async function main(): Promise<void> {
     includeHookEvents: true,
     // No `disallowedTools: ['AskUserQuestion']` here: the canUseTool
     // hook above intercepts the call, surfaces the question to the
-    // browser, and returns the user's answer via deny+message. The
+    // browser, and returns the user's answer via updatedInput.answers. The
     // legacy stream-json `--print` harness needed the disallow because
     // it had no interactive seam at all; the SDK does.
     canUseTool,
@@ -288,11 +306,15 @@ async function main(): Promise<void> {
     ...(mcpServers ? { mcpServers } : {}),
   };
 
+  // -- drive the SDK --------------------------------------------------------
+  const q = query({
+    prompt: promptQueue,
+    options,
+  });
+
   // -- start control reader (stdin → queue) --------------------------------
-  let stopped = false;
   const controlPromise = startControlReader(process.stdin, {
     onUserMessage(content) {
-      if (stopped) return;
       const userMsg: SDKUserMessage = {
         type: 'user',
         message: { role: 'user', content },
@@ -302,10 +324,15 @@ async function main(): Promise<void> {
       promptQueue.push(userMsg);
     },
     onStop() {
-      stopped = true;
-      promptQueue.close();
+      // Interrupt the in-flight Claude turn but keep the prompt stream
+      // open so the same chat session can accept the next user message.
+      void q.interrupt().catch((err) => {
+        process.stderr.write(
+          `[neige-chat-runner] interrupt failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
     },
-    onAnswerQuestion(questionId, answer) {
+    onAnswerQuestion(questionId, answers) {
       const resolver = pendingQuestions.get(questionId);
       if (!resolver) {
         process.stderr.write(
@@ -314,17 +341,11 @@ async function main(): Promise<void> {
         return;
       }
       pendingQuestions.delete(questionId);
-      resolver(answer);
+      resolver(answers);
     },
     onEof() {
       promptQueue.close();
     },
-  });
-
-  // -- drive the SDK --------------------------------------------------------
-  const q = query({
-    prompt: promptQueue,
-    options,
   });
 
   let exitCode = 0;

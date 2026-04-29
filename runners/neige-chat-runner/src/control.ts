@@ -13,7 +13,7 @@ import type { ControlFrame } from './types.js';
 export interface ControlHandlers {
   onUserMessage(content: string): void;
   onStop(): void;
-  onAnswerQuestion(questionId: string, answer: string): void;
+  onAnswerQuestion(questionId: string, answers: Record<string, string>): void;
   /**
    * Called once stdin reaches EOF. The runner uses this to close the
    * SDK prompt iterable so the query can drain naturally.
@@ -71,7 +71,7 @@ export function dispatchLine(line: string, handlers: ControlHandlers): void {
       handlers.onStop();
       return;
     case 'answer_question':
-      handlers.onAnswerQuestion(parsed.question_id, parsed.answer);
+      handlers.onAnswerQuestion(parsed.question_id, parsed.answers);
       return;
   }
 }
@@ -85,8 +85,16 @@ function isControlFrame(value: unknown): value is ControlFrame {
     case 'stop':
       return true;
     case 'answer_question':
-      return typeof obj['question_id'] === 'string' && typeof obj['answer'] === 'string';
+      return (
+        typeof obj['question_id'] === 'string' &&
+        isStringRecord(obj['answers'])
+      );
     default:
       return false;
   }
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.values(value).every((v) => typeof v === 'string');
 }

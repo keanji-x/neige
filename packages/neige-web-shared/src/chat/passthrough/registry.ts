@@ -3,6 +3,7 @@
 // '.', so a registration on 'hook.' handles every 'hook.<subtype>' kind.
 
 import type { ReactNode } from 'react';
+import type { AnswerQuestionHandler } from '../types';
 
 export interface PassthroughRendererProps {
   kind: string;
@@ -13,7 +14,7 @@ export interface PassthroughRendererProps {
    * supplies it; static / preview mounts pass undefined and the renderer
    * should fall back to a read-only display.
    */
-  answerQuestion?: (questionId: string, answer: string) => void;
+  answerQuestion?: AnswerQuestionHandler;
 }
 
 export type PassthroughRenderer = (props: PassthroughRendererProps) => ReactNode;

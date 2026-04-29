@@ -67,7 +67,7 @@ rl.on('line', (line) => {
         type: 'passthrough',
         session_id: sessionId,
         kind: 'stub_answer',
-        payload: { question_id: frame.question_id, answer: frame.answer },
+        payload: { question_id: frame.question_id, answers: frame.answers },
       });
       break;
     default:

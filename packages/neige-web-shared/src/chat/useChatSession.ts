@@ -9,6 +9,7 @@
 //     {"type":"attach","last_seq":<number|null>}   // first frame
 //     {"type":"user_message","content":"…"}        // when user submits
 //     {"type":"stop"}                              // interrupt current turn
+//     {"type":"answer_question","question_id":"…","answers":{...}}
 //   Server → client text JSON:
 //     {"type":"hello","last_seq":<n>}              // attach ack
 //     {"seq":<n>,"event":<NeigeEvent>}             // every other frame
@@ -22,7 +23,7 @@ import {
   type ChatTimeline,
   type ToolResultsById,
 } from './derive';
-import type { NeigeEvent } from './types';
+import type { AnswerQuestionHandler, NeigeEvent, QuestionAnswers } from './types';
 
 export type ChatSessionStatus = 'connecting' | 'open' | 'closed' | 'reconnecting';
 
@@ -42,7 +43,7 @@ export interface UseChatSessionApi {
   isGenerating: boolean;
   /** Send a user message. No-op if WS not open. */
   sendMessage: (content: string) => void;
-  /** Interrupt the current claude turn (server SIGINTs the subprocess). No-op if WS not open. */
+  /** Interrupt the current claude turn through the chat runner. No-op if WS not open. */
   stop: () => void;
   /**
    * Resolve a server-side `ask_question` self-ask dialog. Sends an
@@ -50,7 +51,7 @@ export interface UseChatSessionApi {
    * call. No-op if WS not open (the MCP call will keep waiting; the user
    * can retry once reconnected).
    */
-  answerQuestion: (questionId: string, answer: string) => void;
+  answerQuestion: AnswerQuestionHandler;
 }
 
 const MAX_RECONNECT_DELAY = 10000;
@@ -221,10 +222,10 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     ws.send(JSON.stringify({ type: 'stop' }));
   }, []);
 
-  const answerQuestion = useCallback((questionId: string, answer: string) => {
+  const answerQuestion = useCallback((questionId: string, answers: QuestionAnswers) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'answer_question', question_id: questionId, answer }));
+    ws.send(JSON.stringify({ type: 'answer_question', question_id: questionId, answers }));
   }, []);
 
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);
