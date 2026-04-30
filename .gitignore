@@ -16,6 +16,9 @@ runners/*/dist
 # Old frontend
 frontend/
 
+# External reference repos (cloned for spec-checking, not part of build)
+External/
+
 # OS
 .DS_Store
 
