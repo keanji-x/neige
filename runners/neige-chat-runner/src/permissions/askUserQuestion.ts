@@ -8,6 +8,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 
+import { debug } from '../debug.js';
 import { register } from './registry.js';
 import type {
   PermissionContext,
@@ -36,26 +37,32 @@ export class AskUserQuestionHandler implements ToolPermissionHandler {
     input: Record<string, unknown>,
     context: PermissionContext,
   ): Promise<ToolPermissionResult> {
+    debug(`AskUserQuestion.handle: input=${JSON.stringify(input).slice(0, 400)}`);
     const parsed = parseAskUserQuestionInput(input);
     if (!parsed) {
+      debug('AskUserQuestion.handle: parseAskUserQuestionInput returned null, falling through');
       // Input shape didn't match — fall through to allow-all so the built-in
       // tool runs its placeholder path. Strictly no worse than today's deny.
       return { behavior: 'allow', updatedInput: input };
     }
+    debug(`AskUserQuestion.handle: parsed ${parsed.questions.length} question(s)`);
 
     const answers = await askUserQuestion(context, parsed.questions);
+    debug(`AskUserQuestion.handle: got answers=${JSON.stringify(answers)}`);
 
     // Why: only `answers` is appended. Including `questions: parsed.questions`
     // breaks the SDK's strict zod parse on updatedInput because optional
     // fields (e.g. `header`) get serialized as `undefined` and dropped during
     // round-trip. Commit bcec8c8 introduced that override; do not reintroduce.
-    return {
+    const result: ToolPermissionResult = {
       behavior: 'allow',
       updatedInput: {
         ...input,
         answers,
       },
     };
+    debug(`AskUserQuestion.handle: returning updatedInput keys=${Object.keys(result.updatedInput ?? {}).join(',')}`);
+    return result;
   }
 }
 
@@ -72,6 +79,7 @@ function askUserQuestion(
   const questionId = uuidv4();
   return new Promise<Record<string, string>>((resolve) => {
     context.runner.pendingQuestions.set(questionId, resolve);
+    debug(`askUserQuestion: emitting passthrough qid=${questionId} questions=${questions.length}`);
     context.runner.emit({
       type: 'passthrough',
       session_id: context.runner.sessionId,

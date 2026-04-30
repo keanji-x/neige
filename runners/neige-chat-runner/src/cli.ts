@@ -28,6 +28,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import { startControlReader } from './control.js';
+import { debug } from './debug.js';
 import { mapSdkMessage } from './mapper.js';
 import './permissions/askUserQuestion.js';
 import { lookup } from './permissions/registry.js';
@@ -187,22 +188,28 @@ async function main(): Promise<void> {
     input,
     opts,
   ): Promise<PermissionResult> => {
+    debug(`canUseTool toolName=${toolName} hasOpts=${opts !== undefined} inputKeys=${Object.keys(input).join(',')}`);
     // permissionMode isn't in the SDK's canUseTool opts type today; future
     // SDK versions may surface it. Read defensively so the bypass branch
     // is wired but dormant until the SDK populates it.
     const permissionMode = (opts as { permissionMode?: PermissionMode } | undefined)
       ?.permissionMode;
     if (permissionMode === 'bypassPermissions') {
+      debug(`canUseTool ${toolName}: bypassPermissions short-circuit`);
       return { behavior: 'allow', updatedInput: input };
     }
     const handler = lookup(toolName);
     if (handler) {
-      return handler.handle(toolName, input, {
+      debug(`canUseTool ${toolName}: dispatching to handler`);
+      const result = await handler.handle(toolName, input, {
         signal: opts?.signal,
         permissionMode,
         runner: runnerCtx,
       });
+      debug(`canUseTool ${toolName}: handler returned behavior=${result.behavior}`);
+      return result;
     }
+    debug(`canUseTool ${toolName}: no handler, default allow`);
     return { behavior: 'allow', updatedInput: input };
   };
 
@@ -260,8 +267,10 @@ async function main(): Promise<void> {
       });
     },
     onAnswerQuestion(questionId, answers) {
+      debug(`onAnswerQuestion qid=${questionId} answerKeys=${Object.keys(answers).join(',')} pending=${pendingQuestions.size}`);
       const resolver = pendingQuestions.get(questionId);
       if (!resolver) {
+        debug(`onAnswerQuestion qid=${questionId}: NO PENDING RESOLVER (race?)`);
         process.stderr.write(
           `[neige-chat-runner] answer_question: unknown question_id ${questionId}\n`,
         );
@@ -269,6 +278,7 @@ async function main(): Promise<void> {
       }
       pendingQuestions.delete(questionId);
       resolver(answers);
+      debug(`onAnswerQuestion qid=${questionId}: resolved`);
     },
     onEof() {
       promptQueue.close();
