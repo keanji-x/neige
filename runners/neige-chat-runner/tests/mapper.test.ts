@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { mapSdkMessage, parseContentBlock, pascalToSnake } from '../src/mapper.js';
+import {
+  ALL_KNOWN_SDK_MESSAGE_KEYS,
+  mapSdkMessage,
+  messageKey,
+  parseContentBlock,
+  pascalToSnake,
+} from '../src/mapper.js';
 import type { NeigeEvent } from '../src/types.js';
 
 const SID = '11111111-1111-1111-1111-111111111111';
@@ -174,8 +180,10 @@ describe('mapSdkMessage — system', () => {
   });
 
   it('maps unknown system subtype to system.<subtype> passthrough', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const out = mapSdkMessage({ type: 'system', subtype: 'brand_new' }, SID);
     expect(out[0]).toMatchObject({ kind: 'system.brand_new' });
+    stderr.mockRestore();
   });
 });
 
@@ -338,11 +346,13 @@ describe('mapSdkMessage — stream_event', () => {
   });
 
   it('maps unknown inner stream event to stream_event.<type> passthrough', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const out = mapSdkMessage(
       { type: 'stream_event', event: { type: 'future_inner', data: 1 } },
       SID,
     );
     expect(out[0]).toMatchObject({ type: 'passthrough', kind: 'stream_event.future_inner' });
+    stderr.mockRestore();
   });
 });
 
@@ -476,6 +486,7 @@ describe('mapSdkMessage — assistant checkpoint, result, rate_limit', () => {
 
 describe('mapSdkMessage — fallthrough', () => {
   it('routes unknown top-level type to passthrough with original type', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const out = mapSdkMessage({ type: 'future_thing', x: 1 }, SID);
     expect(out).toEqual<NeigeEvent[]>([
       {
@@ -485,17 +496,162 @@ describe('mapSdkMessage — fallthrough', () => {
         payload: { type: 'future_thing', x: 1 },
       },
     ]);
+    stderr.mockRestore();
   });
 
   it('falls back to kind=unknown when type is missing', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const out = mapSdkMessage({ x: 1 }, SID);
     expect(out[0]).toMatchObject({ kind: 'unknown' });
+    stderr.mockRestore();
   });
 
   it('drops non-objects', () => {
     expect(mapSdkMessage(null, SID)).toEqual([]);
     expect(mapSdkMessage('not an object', SID)).toEqual([]);
     expect(mapSdkMessage(42, SID)).toEqual([]);
+  });
+});
+
+describe('messageKey', () => {
+  it('returns top-level type for non-system, non-stream messages', () => {
+    expect(messageKey({ type: 'assistant', message: {} })).toBe('assistant');
+    expect(messageKey({ type: 'user', message: { role: 'user', content: 'hi' } })).toBe('user');
+    expect(messageKey({ type: 'result', subtype: 'success' })).toBe('result');
+    expect(messageKey({ type: 'rate_limit_event', rate_limit_info: null })).toBe('rate_limit_event');
+  });
+
+  it('returns system:<subtype> for system messages', () => {
+    expect(messageKey({ type: 'system', subtype: 'init' })).toBe('system:init');
+    expect(messageKey({ type: 'system', subtype: 'status', status: 'requesting' })).toBe(
+      'system:status',
+    );
+    expect(messageKey({ type: 'system', subtype: 'brand_new' })).toBe('system:brand_new');
+    expect(messageKey({ type: 'system' })).toBe('system');
+  });
+
+  it('returns stream_event:<inner> and stream_event:content_block_delta:<delta>', () => {
+    expect(messageKey({ type: 'stream_event', event: { type: 'message_stop' } })).toBe(
+      'stream_event:message_stop',
+    );
+    expect(
+      messageKey({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'a' } },
+      }),
+    ).toBe('stream_event:content_block_delta:text_delta');
+    expect(messageKey({ type: 'stream_event' })).toBe('stream_event');
+  });
+
+  it('returns empty string for non-objects and missing type', () => {
+    expect(messageKey(null)).toBe('');
+    expect(messageKey({})).toBe('');
+    expect(messageKey({ x: 1 })).toBe('');
+  });
+});
+
+describe('warnUnknown via mapSdkMessage stderr', () => {
+  it('writes a stderr warning for unknown top-level keys', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const out = mapSdkMessage({ type: 'future_thing', x: 1 }, SID);
+    expect(out[0]).toMatchObject({ type: 'passthrough', kind: 'future_thing' });
+    expect(stderr).toHaveBeenCalledTimes(1);
+    const arg = String(stderr.mock.calls[0]![0]);
+    expect(arg).toContain('[neige-chat-runner] unknown SDK message key:');
+    expect(arg).toContain('future_thing');
+    expect(arg.endsWith('\n')).toBe(true);
+    stderr.mockRestore();
+  });
+
+  it('writes a stderr warning for unknown system subtypes and stream inner types', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    mapSdkMessage({ type: 'system', subtype: 'brand_new' }, SID);
+    mapSdkMessage({ type: 'stream_event', event: { type: 'future_inner' } }, SID);
+    mapSdkMessage(
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'future_delta' } },
+      },
+      SID,
+    );
+    expect(stderr).toHaveBeenCalledTimes(3);
+    const lines = stderr.mock.calls.map((c) => String(c[0]));
+    expect(lines[0]).toContain('system:brand_new');
+    expect(lines[1]).toContain('stream_event:future_inner');
+    expect(lines[2]).toContain('stream_event:content_block_delta:future_delta');
+    stderr.mockRestore();
+  });
+
+  it('does NOT warn for known SDK message keys', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    // A representative spread of known leaf keys — every one of these
+    // is in ALL_KNOWN_SDK_MESSAGE_KEYS, so warn must stay silent even
+    // though e.g. signature_delta drops to [] and rate_limit_event has
+    // no dedicated test case in this file's other blocks.
+    mapSdkMessage({ type: 'system', subtype: 'init' }, SID);
+    mapSdkMessage({ type: 'system', subtype: 'status', status: 'requesting' }, SID);
+    mapSdkMessage({ type: 'system', subtype: 'hook_progress', hook_event: 'PreToolUse' }, SID);
+    mapSdkMessage({ type: 'assistant', message: {} }, SID);
+    mapSdkMessage({ type: 'user', message: { role: 'user', content: 'hi' } }, SID);
+    mapSdkMessage(
+      { type: 'result', subtype: 'success', is_error: false, duration_ms: 0, total_cost_usd: 0 },
+      SID,
+    );
+    mapSdkMessage({ type: 'rate_limit_event', rate_limit_info: null }, SID);
+    mapSdkMessage(
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 's' } },
+      },
+      SID,
+    );
+    mapSdkMessage({ type: 'stream_event', event: { type: 'message_stop' } }, SID);
+    expect(stderr).not.toHaveBeenCalled();
+    stderr.mockRestore();
+  });
+
+  it('truncates the stderr preview for very large messages', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const big = { type: 'future_thing', blob: 'x'.repeat(5000) };
+    mapSdkMessage(big, SID);
+    const arg = String(stderr.mock.calls[0]![0]);
+    expect(arg).toContain('...');
+    // Header (label + colon + spaces + key) + truncated preview (200 chars + '...') + newline.
+    // Allow generous slack but assert it's not the full 5kB.
+    expect(arg.length).toBeLessThan(400);
+    stderr.mockRestore();
+  });
+});
+
+describe('ALL_KNOWN_SDK_MESSAGE_KEYS', () => {
+  it('contains every key the mapper currently dispatches on', () => {
+    const expected = [
+      'assistant',
+      'user',
+      'result',
+      'stream_event',
+      'rate_limit_event',
+      'system',
+      'system:init',
+      'system:status',
+      'system:hook_started',
+      'system:hook_response',
+      'system:hook_progress',
+      'stream_event:message_start',
+      'stream_event:content_block_start',
+      'stream_event:content_block_delta',
+      'stream_event:content_block_stop',
+      'stream_event:message_delta',
+      'stream_event:message_stop',
+      'stream_event:content_block_delta:text_delta',
+      'stream_event:content_block_delta:thinking_delta',
+      'stream_event:content_block_delta:input_json_delta',
+      'stream_event:content_block_delta:signature_delta',
+    ];
+    for (const k of expected) {
+      expect(ALL_KNOWN_SDK_MESSAGE_KEYS.has(k)).toBe(true);
+    }
+    expect(ALL_KNOWN_SDK_MESSAGE_KEYS.size).toBe(expected.length);
   });
 });
 

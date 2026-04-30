@@ -14,6 +14,117 @@
 import type { ContentBlock, NeigeEvent, ToolResultContent } from './types.js';
 
 /**
+ * Every SDK message key the mapper currently has an explicit branch
+ * for. Used to detect — and warn on — new SDK shapes that future
+ * `@anthropic-ai/claude-agent-sdk` upgrades may introduce, so we
+ * notice the gap instead of silently passing it through.
+ *
+ * Key format (mirrors the Microsoft `claudeMessageDispatch.ts`
+ * pattern, extended for our two-level `stream_event` dispatch):
+ *   - top-level types: `'<type>'`           (`'assistant'`, `'user'`, ...)
+ *   - system messages:  `'system:<subtype>'`
+ *   - stream events:    `'stream_event:<inner_type>'`
+ *   - content_block_delta: `'stream_event:content_block_delta:<delta_type>'`
+ *
+ * The leaf key wins for lookup — `messageKey()` returns the most
+ * specific key it can compute, so a known top-level type with a new
+ * subtype/inner-type still surfaces a warning.
+ */
+export const ALL_KNOWN_SDK_MESSAGE_KEYS: ReadonlySet<string> = new Set([
+  // top-level types
+  'assistant',
+  'user',
+  'result',
+  'stream_event',
+  'rate_limit_event',
+  'system',
+  // system subtypes
+  'system:init',
+  'system:status',
+  'system:hook_started',
+  'system:hook_response',
+  'system:hook_progress',
+  // stream_event inner types
+  'stream_event:message_start',
+  'stream_event:content_block_start',
+  'stream_event:content_block_delta',
+  'stream_event:content_block_stop',
+  'stream_event:message_delta',
+  'stream_event:message_stop',
+  // stream_event content_block_delta sub-types
+  'stream_event:content_block_delta:text_delta',
+  'stream_event:content_block_delta:thinking_delta',
+  'stream_event:content_block_delta:input_json_delta',
+  'stream_event:content_block_delta:signature_delta',
+]);
+
+/**
+ * Compute the most specific key for an SDK message.
+ *
+ *   { type: 'assistant', ... }                                  → 'assistant'
+ *   { type: 'system', subtype: 'init', ... }                    → 'system:init'
+ *   { type: 'stream_event', event: { type: 'message_stop' } }   → 'stream_event:message_stop'
+ *   { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta' } } }
+ *                                                               → 'stream_event:content_block_delta:text_delta'
+ *
+ * Returns `''` for non-objects or shapes missing `type`. Callers
+ * compare against `ALL_KNOWN_SDK_MESSAGE_KEYS`; the empty string is
+ * never in the set, so unknown garbage still warns.
+ */
+export function messageKey(msg: unknown): string {
+  if (!isObject(msg)) return '';
+  const type = stringField(msg, 'type');
+  if (typeof type !== 'string' || type.length === 0) return '';
+  if (type === 'system') {
+    const subtype = stringField(msg, 'subtype');
+    return subtype && subtype.length > 0 ? `system:${subtype}` : 'system';
+  }
+  if (type === 'stream_event') {
+    const event = msg['event'];
+    if (!isObject(event)) return 'stream_event';
+    const innerType = stringField(event, 'type');
+    if (typeof innerType !== 'string' || innerType.length === 0) return 'stream_event';
+    if (innerType === 'content_block_delta') {
+      const delta = event['delta'];
+      const deltaType = isObject(delta) ? stringField(delta, 'type') : undefined;
+      if (typeof deltaType === 'string' && deltaType.length > 0) {
+        return `stream_event:content_block_delta:${deltaType}`;
+      }
+      return 'stream_event:content_block_delta';
+    }
+    return `stream_event:${innerType}`;
+  }
+  return type;
+}
+
+/**
+ * Write a one-line warning to stderr when the mapper sees a key it
+ * doesn't recognize. The truncated JSON preview keeps the line
+ * readable when the daemon's `spawn_chat_stderr_reader` forwards it
+ * to `tracing::warn`.
+ *
+ * Gated on `ALL_KNOWN_SDK_MESSAGE_KEYS` — calling this from a
+ * fallthrough branch is a no-op when the leaf key is already
+ * recognized, so callers can call freely without repeating the set
+ * check inline.
+ *
+ * Side-effecting; returns void. Callers continue to emit their
+ * existing passthrough so wire behavior is unchanged.
+ */
+function warnUnknown(key: string, msg: unknown): void {
+  if (key.length > 0 && ALL_KNOWN_SDK_MESSAGE_KEYS.has(key)) return;
+  let preview: string;
+  try {
+    preview = JSON.stringify(msg) ?? '';
+  } catch {
+    preview = '<unserializable>';
+  }
+  if (preview.length > 200) preview = preview.slice(0, 200) + '...';
+  const label = key.length > 0 ? key : '<no-type>';
+  process.stderr.write(`[neige-chat-runner] unknown SDK message key: ${label} ${preview}\n`);
+}
+
+/**
  * Public entry point: take one SDK message and return zero or more
  * NeigeEvents to emit on the wire. Returns an array because some SDK
  * shapes (a synthesized user `tool_result` wrapper containing N
@@ -45,6 +156,7 @@ export function mapSdkMessage(msg: unknown, sessionId: string): NeigeEvent[] {
       // Unknown top-level type → passthrough with the original `type`
       // string as kind. Keeps forward-compat with new SDK shapes
       // without the runner needing a release.
+      warnUnknown(messageKey(msg), msg);
       return [
         {
           type: 'passthrough',
@@ -75,6 +187,7 @@ function mapSystem(msg: Record<string, unknown>, sessionId: string): NeigeEvent[
       // convention. Frontend treats it as opaque.
       return [systemHookPassthrough(msg, sessionId, 'progress')];
     default: {
+      warnUnknown(messageKey(msg), msg);
       const kind =
         typeof subtype === 'string' && subtype.length > 0 ? `system.${subtype}` : 'system.unknown';
       return [
@@ -142,6 +255,7 @@ interface StreamInner {
 function mapStreamEvent(msg: Record<string, unknown>, sessionId: string): NeigeEvent[] {
   const event = msg['event'];
   if (!isObject(event)) {
+    warnUnknown(messageKey(msg), msg);
     return [{ type: 'passthrough', session_id: sessionId, kind: 'stream_event.unknown', payload: msg }];
   }
   const inner = event as StreamInner;
@@ -212,6 +326,7 @@ function mapStreamEvent(msg: Record<string, unknown>, sessionId: string): NeigeE
           return [];
         default:
           // Unknown inner delta — drop, same as map.rs ContentBlockDelta::Other.
+          warnUnknown(messageKey(msg), msg);
           return [];
       }
     }
@@ -239,6 +354,7 @@ function mapStreamEvent(msg: Record<string, unknown>, sessionId: string): NeigeE
     case 'message_stop':
       return [{ type: 'assistant_message_stop', session_id: sessionId, message_id: '' }];
     default:
+      warnUnknown(messageKey(msg), msg);
       return [
         {
           type: 'passthrough',
