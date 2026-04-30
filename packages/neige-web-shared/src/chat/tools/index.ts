@@ -14,8 +14,13 @@ import { GrepToolCard } from './GrepToolCard';
 import { GlobToolCard } from './GlobToolCard';
 import { TaskToolCard } from './TaskToolCard';
 
-export type { ToolRenderer, ToolRendererProps } from './registry';
-export { toolRegistry, registerToolRenderer, lookupToolRenderer } from './registry';
+export type { ToolRenderer, ToolRendererMeta, ToolRendererProps } from './registry';
+export {
+  toolRegistry,
+  registerToolRenderer,
+  lookupToolRenderer,
+  lookupToolMeta,
+} from './registry';
 export { DefaultToolCard } from './DefaultToolCard';
 export { AskUserQuestionCard } from './AskUserQuestionCard';
 export { TodoWriteToolCard } from './TodoWriteToolCard';
@@ -28,7 +33,8 @@ export { GlobToolCard } from './GlobToolCard';
 export { TaskToolCard } from './TaskToolCard';
 
 registerToolRenderer('AskUserQuestion', AskUserQuestionCard);
-registerToolRenderer('TodoWrite', TodoWriteToolCard);
+// TodoWrite's whole point is the live checklist — show it without a click.
+registerToolRenderer('TodoWrite', TodoWriteToolCard, { defaultOpen: true });
 registerToolRenderer('Bash', BashToolCard);
 registerToolRenderer('Edit', EditToolCard);
 registerToolRenderer('Write', WriteToolCard);

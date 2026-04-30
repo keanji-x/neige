@@ -18,7 +18,7 @@ import {
 import type { ChatTimeline, ToolResultsById } from '../derive';
 import type { AnswerQuestionHandler, ToolResultContent } from '../types';
 import { ToolResultBlock } from './ToolResultBlock';
-import { DefaultToolCard, lookupToolRenderer } from '../tools';
+import { DefaultToolCard, lookupToolMeta, lookupToolRenderer } from '../tools';
 
 interface ToolUseBlockProps {
   name: string;
@@ -106,7 +106,8 @@ export function ToolUseBlock({
   toolResults,
   onAnswerQuestion,
 }: ToolUseBlockProps) {
-  const [open, setOpen] = useState(false);
+  const meta = lookupToolMeta(name);
+  const [open, setOpen] = useState(meta.defaultOpen ?? false);
   const summary = summarizeInput(name, input);
   const Renderer = lookupToolRenderer(name) ?? DefaultToolCard;
   const subagent = subagents?.[toolUseId];

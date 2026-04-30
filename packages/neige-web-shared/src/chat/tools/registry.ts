@@ -41,12 +41,34 @@ export interface ToolRendererProps {
 
 export type ToolRenderer = (props: ToolRendererProps) => ReactNode;
 
-export const toolRegistry = new Map<string, ToolRenderer>();
+/**
+ * Per-tool rendering hints. Stored alongside the renderer so the
+ * enclosing `ToolUseBlock` can treat a card whose primary UI *is* the
+ * point (e.g. TodoWrite's checklist) differently from one whose
+ * default-collapsed state is fine (e.g. Bash's command line).
+ */
+export interface ToolRendererMeta {
+  /** When true, the wrapping ToolUseBlock starts expanded so the
+   *  custom card is visible immediately. Click-to-collapse still works. */
+  defaultOpen?: boolean;
+}
 
-export function registerToolRenderer(name: string, renderer: ToolRenderer): void {
+export const toolRegistry = new Map<string, ToolRenderer>();
+const toolMetaRegistry = new Map<string, ToolRendererMeta>();
+
+export function registerToolRenderer(
+  name: string,
+  renderer: ToolRenderer,
+  meta: ToolRendererMeta = {},
+): void {
   toolRegistry.set(name, renderer);
+  toolMetaRegistry.set(name, meta);
 }
 
 export function lookupToolRenderer(name: string): ToolRenderer | null {
   return toolRegistry.get(name) ?? null;
+}
+
+export function lookupToolMeta(name: string): ToolRendererMeta {
+  return toolMetaRegistry.get(name) ?? {};
 }
