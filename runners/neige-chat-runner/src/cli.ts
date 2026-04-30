@@ -19,16 +19,19 @@
  */
 import fs from 'node:fs';
 import { Command } from 'commander';
-import { v4 as uuidv4 } from 'uuid';
 import {
   query,
   type Options,
+  type PermissionMode,
   type PermissionResult,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
 import { startControlReader } from './control.js';
 import { mapSdkMessage } from './mapper.js';
+import './permissions/askUserQuestion.js';
+import { lookup } from './permissions/registry.js';
+import type { RunnerContext } from './permissions/types.js';
 import { AsyncQueue } from './queue.js';
 import type { NeigeEvent } from './types.js';
 
@@ -161,120 +164,44 @@ async function main(): Promise<void> {
   // is safe.
   const promptQueue = new AsyncQueue<SDKUserMessage>();
 
-  type AskUserOption = {
-    label: string;
-    description?: string;
-    preview?: string;
-  };
-  type AskUserQuestion = {
-    question: string;
-    header?: string;
-    multiSelect: boolean;
-    options: AskUserOption[];
-  };
-
   // Tracks pending askUserQuestion resolvers keyed by question_id. The
   // control-channel `answer_question` frame resolves the matching entry;
-  // canUseTool then returns the user's choices to the SDK via
-  // PermissionResult.updatedInput.answers.
+  // the AskUserQuestion handler then returns the user's choices to the
+  // SDK via PermissionResult.updatedInput.answers.
   const pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
 
-  /**
-   * Surface a structured AskUserQuestion to the browser via a passthrough
-   * NeigeEvent and block until the user picks an option (or types a
-   * free-form answer). The payload is the chat-mode question schema:
-   * `{ schema, source, question_id, questions }`.
-   */
-  const askUserQuestion = (questions: AskUserQuestion[]): Promise<Record<string, string>> => {
-    const questionId = uuidv4();
-    return new Promise<Record<string, string>>((resolve) => {
-      pendingQuestions.set(questionId, resolve);
-      emit({
-        type: 'passthrough',
-        session_id: args.sessionId,
-        kind: 'neige.ask_user_question',
-        payload: {
-          schema: 'neige.ask_user_question.v1',
-          source: 'sdk',
-          question_id: questionId,
-          questions,
-        },
-      });
-    });
+  const runnerCtx: RunnerContext = {
+    sessionId: args.sessionId,
+    emit,
+    pendingQuestions,
   };
 
-  /**
-   * Pull the official `questions[]` shape out of an AskUserQuestion input,
-   * defensive about partial / malformed shapes. Returns null if we can't
-   * find at least one usable question — caller falls through to the
-   * default permission verdict.
-   */
-  const parseAskUserQuestionInput = (
-    input: Record<string, unknown>,
-  ): { questions: AskUserQuestion[] } | null => {
-    const questions = (input as { questions?: unknown }).questions;
-    if (!Array.isArray(questions) || questions.length === 0) return null;
-    const parsed: AskUserQuestion[] = [];
-    for (const raw of questions) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-      const qr = raw as Record<string, unknown>;
-      const q = qr['question'];
-      if (typeof q !== 'string' || q.length === 0) return null;
-      const rawOpts = qr['options'];
-      if (!Array.isArray(rawOpts)) return null;
-      const options: AskUserOption[] = [];
-      for (const o of rawOpts) {
-        if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
-        const or = o as Record<string, unknown>;
-        const label = or['label'];
-        if (typeof label !== 'string' || label.length === 0) return null;
-        options.push({
-          label,
-          description: typeof or['description'] === 'string' ? or['description'] : undefined,
-          preview: typeof or['preview'] === 'string' ? or['preview'] : undefined,
-        });
-      }
-      parsed.push({
-        question: q,
-        header: typeof qr['header'] === 'string' ? qr['header'] : undefined,
-        multiSelect: typeof qr['multiSelect'] === 'boolean' ? qr['multiSelect'] : false,
-        options,
-      });
-    }
-    return { questions: parsed };
-  };
-
-  // -- canUseTool: intercept AskUserQuestion, allow everything else --------
+  // -- canUseTool: dispatch into the per-tool handler registry -------------
   //
-  // The SDK fires canUseTool before every tool execution, including the
-  // built-in `AskUserQuestion`. We use that hook to surface the question
-  // to the browser, await the answer, and return it via the SDK's official
-  // `{ questions, answers }` updatedInput contract. This
-  // replaces the old `disallowedTools: ['AskUserQuestion']` workaround:
-  // that flag existed because the legacy `--print` harness returned a
-  // 17-char placeholder without giving the user a chance to answer.
-  // canUseTool gives us a real interactive seam, so the tool can stay
-  // enabled.
+  // The SDK fires canUseTool before every tool execution. We delegate to a
+  // registry of per-tool handlers (see src/permissions/) so each tool's
+  // policy lives in one file. `bypassPermissions` short-circuits to allow
+  // before any handler runs, matching MS's vscode-copilot-chat dispatcher.
   const canUseTool: NonNullable<Options['canUseTool']> = async (
     toolName,
     input,
+    opts,
   ): Promise<PermissionResult> => {
-    if (toolName === 'AskUserQuestion') {
-      const parsed = parseAskUserQuestionInput(input);
-      if (parsed) {
-        const answers = await askUserQuestion(parsed.questions);
-        return {
-          behavior: 'allow',
-          updatedInput: {
-            ...input,
-            questions: parsed.questions,
-            answers,
-          },
-        };
-      }
-      // Fall through to allow-all if the input shape didn't match — the
-      // built-in tool will then run its placeholder path; not great, but
-      // strictly no worse than today's disallow.
+    // permissionMode isn't in the SDK's canUseTool opts type today; future
+    // SDK versions may surface it. Read defensively so the bypass branch
+    // is wired but dormant until the SDK populates it.
+    const permissionMode = (opts as { permissionMode?: PermissionMode } | undefined)
+      ?.permissionMode;
+    if (permissionMode === 'bypassPermissions') {
+      return { behavior: 'allow', updatedInput: input };
+    }
+    const handler = lookup(toolName);
+    if (handler) {
+      return handler.handle(toolName, input, {
+        signal: opts?.signal,
+        permissionMode,
+        runner: runnerCtx,
+      });
     }
     return { behavior: 'allow', updatedInput: input };
   };
