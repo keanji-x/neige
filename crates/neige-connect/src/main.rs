@@ -6,7 +6,10 @@ use std::process::{Command, Stdio};
 const REPO_URL: &str = "https://github.com/keanji-x/neige.git";
 
 #[derive(Parser)]
-#[command(name = "neige-connect", about = "Connect to a remote neige server via SSH tunnel")]
+#[command(
+    name = "neige-connect",
+    about = "Connect to a remote neige server via SSH tunnel"
+)]
 struct Cli {
     /// SSH host (e.g. user@hostname or SSH config alias)
     host: String,
@@ -84,8 +87,11 @@ fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> 
         Ok(v) if !v.is_empty() => format!("NEIGE_PASSWORD={} ", shell_single_quote(&v)),
         _ => String::new(),
     };
-    // Source shell profile so nvm/cargo are available in non-interactive SSH
-    let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done"#;
+    // Source shell profile so nvm/cargo are available in non-interactive SSH.
+    // Use . (dot) instead of source for POSIX sh compatibility.
+    // Also load nvm explicitly since .bashrc often has [ -z "$PS1" ] && return
+    // which skips nvm init in non-interactive SSH commands.
+    let source_profile = r#"for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null || true; done; export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 2>/dev/null || true"#;
 
     // Check if cargo and node (20+) are available
     let check_deps = format!(
@@ -107,7 +113,9 @@ fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> 
 
     let script = format!(
         r#"# Load shell profile for nvm/cargo in non-interactive SSH
-for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && source "$f" 2>/dev/null || true; done
+for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.cargo/env"; do [ -f "$f" ] && . "$f" 2>/dev/null || true; done
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 2>/dev/null || true
 
 set -e
 INSTALL_DIR=$(eval echo "{install_dir}")
@@ -204,7 +212,10 @@ exit 1
             true
         }
         Ok(s) => {
-            eprintln!("\nProvisioning failed (exit code: {})", s.code().unwrap_or(-1));
+            eprintln!(
+                "\nProvisioning failed (exit code: {})",
+                s.code().unwrap_or(-1)
+            );
             false
         }
         Err(e) => {
@@ -220,13 +231,19 @@ fn start_master(host: &str, neige_port: u16, local_port: u16, control_path: &str
 
     let status = Command::new("ssh")
         .args([
-            "-f", "-N",
+            "-f",
+            "-N",
             "-M", // ControlMaster
-            "-S", control_path,
-            "-L", &format!("{local_port}:localhost:{neige_port}"),
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
+            "-S",
+            control_path,
+            "-L",
+            &format!("{local_port}:localhost:{neige_port}"),
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
             host,
         ])
         .stdin(Stdio::inherit())
@@ -253,9 +270,12 @@ fn start_master(host: &str, neige_port: u16, local_port: u16, control_path: &str
 fn add_forward(host: &str, control_path: &str, local: u16, remote: u16) -> bool {
     let status = Command::new("ssh")
         .args([
-            "-S", control_path,
-            "-O", "forward",
-            "-L", &format!("{local}:localhost:{remote}"),
+            "-S",
+            control_path,
+            "-O",
+            "forward",
+            "-L",
+            &format!("{local}:localhost:{remote}"),
             host,
         ])
         .stdout(Stdio::null())
@@ -274,9 +294,12 @@ fn add_forward(host: &str, control_path: &str, local: u16, remote: u16) -> bool 
 fn cancel_forward(host: &str, control_path: &str, local: u16, remote: u16) -> bool {
     let status = Command::new("ssh")
         .args([
-            "-S", control_path,
-            "-O", "cancel",
-            "-L", &format!("{local}:localhost:{remote}"),
+            "-S",
+            control_path,
+            "-O",
+            "cancel",
+            "-L",
+            &format!("{local}:localhost:{remote}"),
             host,
         ])
         .stdout(Stdio::null())
@@ -346,7 +369,10 @@ async fn main() {
         open_browser(local_port);
     }
 
-    println!("Watching for port forward changes (poll every {}s)...", cli.poll_interval);
+    println!(
+        "Watching for port forward changes (poll every {}s)...",
+        cli.poll_interval
+    );
     println!("Press Ctrl+C to disconnect.\n");
 
     // Track currently forwarded ports (excluding neige's own port)
@@ -375,11 +401,7 @@ async fn main() {
         }
 
         // Poll neige config for port forward list
-        let desired = match client
-            .get(format!("{base_url}/api/config"))
-            .send()
-            .await
-        {
+        let desired = match client.get(format!("{base_url}/api/config")).send().await {
             Ok(res) if res.status().is_success() => {
                 match res.json::<NeigeConfig>().await {
                     Ok(config) => config
@@ -403,10 +425,7 @@ async fn main() {
         }
 
         // Remove stale forwards
-        let to_remove: Vec<_> = active_forwards
-            .difference(&desired)
-            .copied()
-            .collect();
+        let to_remove: Vec<_> = active_forwards.difference(&desired).copied().collect();
         for (local, remote) in to_remove {
             if cancel_forward(&cli.host, &control_path, local, remote) {
                 active_forwards.remove(&(local, remote));
