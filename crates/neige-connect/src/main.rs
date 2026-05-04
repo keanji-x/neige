@@ -38,6 +38,11 @@ struct Cli {
     #[arg(long)]
     no_browser: bool,
 
+    /// Additional allowed Origin (e.g. https://neige.example.com). Can be repeated.
+    /// Passed through to neige-server's --allowed-origin during provisioning.
+    #[arg(long)]
+    allowed_origin: Vec<String>,
+
     /// Skip auto-provisioning if neige is not running
     #[arg(long)]
     no_provision: bool,
@@ -75,7 +80,13 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> bool {
+fn ensure_remote(
+    host: &str,
+    port: u16,
+    remote_dir: &str,
+    install_dir: &str,
+    allowed_origins: &[String],
+) -> bool {
     // Forward NEIGE_PASSWORD from local env to remote process. SSH does not
     // transport env vars by default (SendEnv requires matching AcceptEnv in
     // sshd_config), so we inline the value into the start-up script instead.
@@ -110,6 +121,13 @@ fn ensure_remote(host: &str, port: u16, remote_dir: &str, install_dir: &str) -> 
         eprintln!("Please install Rust and Node.js 20+ on the remote host first.");
         return false;
     }
+
+    // Build --allowed-origin flags for the server startup command
+    let allowed_origin_flags: String = allowed_origins
+        .iter()
+        .flat_map(|o| ["--allowed-origin".to_string(), shell_single_quote(o)])
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let script = format!(
         r#"# Load shell profile for nvm/cargo in non-interactive SSH
@@ -173,7 +191,7 @@ fi
 
 echo "[neige] Starting neige-server on port {port} in $WORK_DIR..."
 cd "$WORK_DIR"
-TERM=xterm-256color COLORTERM=truecolor {password_prefix}nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
+TERM=xterm-256color COLORTERM=truecolor {password_prefix}nohup "$BIN" --port {port} --static-dir "$INSTALL_DIR/neige/web/dist" {allowed_origin_flags} > "$INSTALL_DIR/neige/.neige-server.log" 2>&1 &
 disown
 NEIGE_PID=$!
 
@@ -353,7 +371,13 @@ async fn main() {
 
     // Ensure neige is up-to-date and running on remote
     if !cli.no_provision {
-        if !ensure_remote(&cli.host, cli.port, &cli.remote_dir, &cli.install_dir) {
+        if !ensure_remote(
+            &cli.host,
+            cli.port,
+            &cli.remote_dir,
+            &cli.install_dir,
+            &cli.allowed_origin,
+        ) {
             std::process::exit(1);
         }
     }
