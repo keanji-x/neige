@@ -231,6 +231,38 @@ fn build_resume_command(program: &str, session_id: &Uuid) -> String {
     }
 }
 
+/// Locate the on-disk jsonl that Claude CLI persists for a session.
+///
+/// Two layouts are possible:
+///   1. Non-worktree: `~/.claude/projects/<encoded-cwd>/<session>.jsonl`
+///   2. Worktree:     `~/.claude/projects/<encoded-cwd>-claude-worktrees-<name>/<session>.jsonl`
+/// Tries the direct path first, then falls back to scanning sibling
+/// directories whose name starts with the encoded base cwd.
+pub fn find_session_jsonl(session_id: &Uuid, base_cwd: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = Path::new(&home).join(".claude").join("projects");
+    let session_str = session_id.to_string();
+    let base_encoded = base_cwd.replace('/', "-");
+    let jsonl_name = format!("{}.jsonl", session_str);
+
+    let direct = projects_dir.join(&base_encoded).join(&jsonl_name);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    for entry in std::fs::read_dir(&projects_dir).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !dir_name.starts_with(&base_encoded) {
+            continue;
+        }
+        let candidate = entry.path().join(&jsonl_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Find the worktree cwd where Claude CLI stored a session's conversation data.
 ///
 /// When a session is created with `--worktree`, Claude CLI creates a git worktree

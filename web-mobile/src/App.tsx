@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useToast } from '@neige/shared'
+import { SharePage, useToast } from '@neige/shared'
 import './App.css'
 import { useAuth } from './useAuth'
 import { useConversations } from './useConversations'
@@ -18,7 +18,21 @@ import { ChatPane } from './components/ChatPane'
 import { AddSheet } from './components/AddSheet'
 import { CardMenu } from './components/CardMenu'
 
+// `/share/<token>` short-circuits everything — no auth, no card stack, no
+// websockets — so a colleague without a neige login can read the conversation.
+function shareToken(): string | null {
+  if (typeof window === 'undefined') return null
+  const m = window.location.pathname.match(/^\/share\/([^/]+)\/?$/)
+  return m ? decodeURIComponent(m[1]) : null
+}
+
 function App() {
+  const tok = shareToken()
+  if (tok) return <SharePage token={tok} />
+  return <MainApp />
+}
+
+function MainApp() {
   const { state: authState, markAuthed, markAnonymous } = useAuth()
   const { conversations, connected, refresh } = useConversations()
   const stack = useCardStack()

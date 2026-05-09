@@ -11,6 +11,7 @@ mod config;
 mod conversations;
 mod fs;
 mod proxy;
+pub mod share;
 mod util;
 mod ws;
 
@@ -53,6 +54,12 @@ pub fn router() -> Router<AppState> {
         .route("/api/layout", get(config::get_layout))
         .route("/api/layout", post(config::save_layout))
         .route("/api/proxy", get(proxy::proxy_request))
+        .route(
+            "/api/conversations/{id}/share",
+            post(share::create_share),
+        )
+        .route("/api/share/{token}/manifest", get(share::share_manifest))
+        .route("/api/share/{token}/jsonl", get(share::share_jsonl))
         .route("/ws/{id}", get(ws::ws_handler))
         .route("/ws/{id}/chat", get(chat_ws::chat_ws_handler))
 }
