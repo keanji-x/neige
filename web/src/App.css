@@ -432,12 +432,18 @@
   opacity: 0.9;
 }
 
-/* Floating connection-status chip in the corner of a chat panel */
-.chat-status-chip {
+/* Floating toolbar (status + share) in the top-right of a chat panel */
+.chat-toolbar {
   position: absolute;
   top: 8px;
   right: 12px;
   z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-status-chip {
   font-size: 10px;
   font-family: var(--font-sans);
   padding: 2px 8px;

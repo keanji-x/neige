@@ -15,21 +15,25 @@ interface ChatViewProps {
   onSubmit?: (text: string) => void;
   onStop?: () => void;
   isGenerating?: boolean;
+  /** Hide the compose box and edit affordances; used by the public share viewer. */
+  readOnly?: boolean;
 }
 
 const STICK_THRESHOLD_PX = 120;
 
-export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewProps) {
+export function ChatView({ events, onSubmit, onStop, isGenerating, readOnly }: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
   const respond = onSubmit ?? (() => {});
   // Only the most-recent user message is editable; earlier turns belong to the
-  // committed conversation.
-  const lastUserIndex = (() => {
-    for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
-      if (timeline.messages[i].role === 'user') return i;
-    }
-    return -1;
-  })();
+  // committed conversation. Read-only viewers (share links) edit nothing.
+  const lastUserIndex = readOnly
+    ? -1
+    : (() => {
+        for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
+          if (timeline.messages[i].role === 'user') return i;
+        }
+        return -1;
+      })();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -123,14 +127,16 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
         </Box>
       </Box>
 
-      <ComposeBox
-        onSubmit={(text) => {
-          if (onSubmit) onSubmit(text);
-          else console.log('[ChatView] submit:', text);
-        }}
-        onStop={onStop}
-        isGenerating={isGenerating}
-      />
+      {!readOnly && (
+        <ComposeBox
+          onSubmit={(text) => {
+            if (onSubmit) onSubmit(text);
+            else console.log('[ChatView] submit:', text);
+          }}
+          onStop={onStop}
+          isGenerating={isGenerating}
+        />
+      )}
     </Flex>
   );
 }

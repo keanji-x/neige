@@ -421,9 +421,18 @@ async fn main() {
         .route("/api/auth/logout", post(auth::routes::logout))
         .route("/api/auth/whoami", get(auth::routes::whoami));
 
+    // The SPA shell at `/share/{token}` — token validity is checked downstream
+    // by the API handlers. We just need the client-side router to mount.
+    let share_static_dir = static_dir.clone();
+    let share_index = axum::routing::get(move |_: axum::extract::Path<String>| {
+        let dir = share_static_dir.clone();
+        async move { api::share::share_index_html(dir).await }
+    });
+
     let app = Router::new()
         .merge(public)
         .merge(api::router())
+        .route("/share/{token}", share_index)
         .nest_service("/m", ServeDir::new(&mobile_static_dir))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(axum::middleware::from_fn_with_state(

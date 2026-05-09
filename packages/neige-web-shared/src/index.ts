@@ -30,6 +30,9 @@ export {
 } from './chat/tools';
 export type { ToolRenderer, ToolRendererProps } from './chat/tools';
 export { useChatSession } from './chat/useChatSession';
+export { jsonlToEvents } from './chat/jsonlToEvents';
+export { SharePage } from './chat/SharePage';
+export type { SharePageProps } from './chat/SharePage';
 export type {
   UseChatSessionOptions,
   UseChatSessionApi,
