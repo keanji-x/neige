@@ -7,6 +7,7 @@ web/dist
 web-mobile/node_modules
 web-mobile/dist
 packages/*/node_modules
+.vite/
 
 # Old frontend
 frontend/
