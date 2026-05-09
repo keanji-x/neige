@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type DockviewApi } from 'dockview';
-import { Dialog, DialogContent, useToast } from '@neige/shared';
+import { Dialog, DialogContent, SharePage, useToast } from '@neige/shared';
 import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
 import { CreateDialog } from './components/CreateDialog';
@@ -12,7 +12,22 @@ import { useConfig } from './hooks/useConfig';
 import type { CreateConvRequest } from './types';
 import './App.css';
 
+// Public read-only viewer for `/share/<token>` short-circuits before any of
+// the auth-gated app machinery runs (no /api/conversations poll, no
+// websockets). Kept as a path-prefix match so we don't add a router dep.
+function shareToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const m = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 function App() {
+  const tok = shareToken();
+  if (tok) return <SharePage token={tok} />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const { conversations, connected, create, rename, remove } = useConversations();
   const { config, update: updateConfig } = useConfig();
   const { toast } = useToast();
@@ -317,3 +332,4 @@ function App() {
 }
 
 export default App;
+

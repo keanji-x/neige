@@ -32,10 +32,23 @@ impl AuthConfig {
 }
 
 fn is_public_path(path: &str) -> bool {
-    matches!(
+    if matches!(
         path,
         "/login" | "/login/submit" | "/favicon.ico" | "/api/healthz"
-    )
+    ) {
+        return true;
+    }
+    // Share links are token-gated by the handler itself; bypass the session
+    // cookie so colleagues without a neige login can view a shared chat.
+    // Strict prefix forms — `/share/<token>` or `/api/share/<token>/...` —
+    // a bare `/share` (no token) stays gated and 404s on the static fallback.
+    if let Some(rest) = path.strip_prefix("/share/") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = path.strip_prefix("/api/share/") {
+        return !rest.is_empty();
+    }
+    false
 }
 
 pub async fn auth_middleware(
@@ -149,6 +162,20 @@ mod tests {
         assert!(!is_public_path("/api/conversations"));
         assert!(!is_public_path("/m/"));
         assert!(!is_public_path("/"));
+    }
+
+    #[test]
+    fn is_public_path_covers_share_links() {
+        // Share viewer + its data endpoints must bypass auth so a colleague
+        // without a neige login can read a shared transcript.
+        assert!(is_public_path("/share/abc123"));
+        assert!(is_public_path("/api/share/abc123/manifest"));
+        assert!(is_public_path("/api/share/abc123/jsonl"));
+        // A token is required — bare prefixes stay gated.
+        assert!(!is_public_path("/share"));
+        assert!(!is_public_path("/share/"));
+        assert!(!is_public_path("/api/share"));
+        assert!(!is_public_path("/api/share/"));
     }
 }
 
