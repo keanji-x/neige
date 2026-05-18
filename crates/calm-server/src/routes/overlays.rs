@@ -6,6 +6,7 @@
 //! overlay rendering without a real plugin.
 
 use crate::error::Result;
+use crate::event::Event;
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
 use axum::{
@@ -32,16 +33,17 @@ async fn list(
     State(s): State<AppState>,
     Query(q): Query<OverlayQuery>,
 ) -> Result<Json<Vec<Overlay>>> {
-    let _ = (s, q);
-    todo!("track B: overlays_for")
+    let overlays = s.repo.overlays_for(&q.entity_kind, &q.entity_id).await?;
+    Ok(Json(overlays))
 }
 
 async fn upsert(
     State(s): State<AppState>,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
-    let _ = (s, p);
-    todo!("track B: overlay_upsert + emit Event::OverlaySet")
+    let overlay = s.repo.overlay_upsert(p).await?;
+    s.events.emit(Event::OverlaySet(overlay.clone()));
+    Ok(Json(overlay))
 }
 
 #[derive(Deserialize)]
@@ -56,6 +58,14 @@ async fn delete_(
     State(s): State<AppState>,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
-    let _ = (s, b);
-    todo!("track B: overlay_delete + emit Event::OverlayDeleted, return 204")
+    s.repo
+        .overlay_delete(&b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind)
+        .await?;
+    s.events.emit(Event::OverlayDeleted {
+        plugin_id: b.plugin_id,
+        entity_kind: b.entity_kind,
+        entity_id: b.entity_id,
+        kind: b.kind,
+    });
+    Ok(StatusCode::NO_CONTENT)
 }
