@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         repo,
         events: EventBus::new(),
-        daemon: Arc::new(DaemonClient::new_stub()),
+        daemon: Arc::new(DaemonClient::new(&cfg)),
         plugin: Arc::new(PluginHost::new_stub()),
     };
 
