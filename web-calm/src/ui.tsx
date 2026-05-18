@@ -181,8 +181,8 @@ export function WaveRow({
 // WaveCard — dispatches on card type.
 // ============================================================
 
-function TerminalCard({ title, lines, convId }: TerminalCardData) {
-  const live = !!convId;
+function TerminalCard({ title, lines, terminalId }: TerminalCardData) {
+  const live = !!terminalId;
   return (
     <div className={'term' + (live ? ' live' : '')}>
       <div className="term-head">
@@ -196,7 +196,7 @@ function TerminalCard({ title, lines, convId }: TerminalCardData) {
       </div>
       <div className="term-body">
         {live ? (
-          <XtermView convId={convId!} />
+          <XtermView terminalId={terminalId!} />
         ) : (
           <>
             {lines.map((l, i) => (
@@ -318,11 +318,18 @@ export function Sidebar({
   waves,
   route,
   onGo,
+  onCreateCove,
+  onCreateWave,
 }: {
   coves: Cove[];
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
+  /** When supplied, the sidebar renders a `+ New Cove` button below the
+   *  Coves list. Used to bootstrap a fresh kernel — once we have a real
+   *  plugin layer this moves into a command-palette / settings panel. */
+  onCreateCove?: (name: string, color: string) => void | Promise<void>;
+  onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   return (
@@ -378,6 +385,10 @@ export function Sidebar({
           </button>
         );
       })}
+      {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
+      {onCreateWave && route.name === 'cove' && (
+        <NewWaveButton coveId={route.coveId} onCreate={onCreateWave} />
+      )}
 
       <span className="sp" />
       <div className="me-row">
@@ -388,6 +399,103 @@ export function Sidebar({
         </span>
       </div>
     </aside>
+  );
+}
+
+// ---------------- NewCove / NewWave inline forms ----------------
+
+const SWATCH_COLORS = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
+
+function NewCoveButton({
+  onCreate,
+}: {
+  onCreate: (name: string, color: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [color, setColor] = useState(SWATCH_COLORS[0]);
+  if (!open) {
+    return (
+      <button className="cove-nav new" onClick={() => setOpen(true)} title="New cove">
+        <span className="swatch-wrap"><span className="swatch ghost">+</span></span>
+        <span className="lbl">New cove</span>
+      </button>
+    );
+  }
+  const submit = async () => {
+    const n = name.trim();
+    if (!n) return;
+    await onCreate(n, color);
+    setName('');
+    setOpen(false);
+  };
+  return (
+    <div className="cove-nav new editing">
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
+        <select
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          style={{ background: color, width: 24, height: 24, borderRadius: 6, border: 'none' }}
+          aria-label="cove color"
+        >
+          {SWATCH_COLORS.map((c) => (
+            <option key={c} value={c} style={{ background: c }}>{c}</option>
+          ))}
+        </select>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Cove name"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void submit();
+            if (e.key === 'Escape') setOpen(false);
+          }}
+          style={{ flex: 1, minWidth: 0, font: 'inherit' }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function NewWaveButton({
+  coveId,
+  onCreate,
+}: {
+  coveId: string;
+  onCreate: (coveId: string, title: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  if (!open) {
+    return (
+      <button className="cove-nav new" onClick={() => setOpen(true)} title="New wave">
+        <span className="swatch-wrap"><span className="swatch ghost">+</span></span>
+        <span className="lbl">New wave</span>
+      </button>
+    );
+  }
+  const submit = async () => {
+    const t = title.trim();
+    if (!t) return;
+    await onCreate(coveId, t);
+    setTitle('');
+    setOpen(false);
+  };
+  return (
+    <div className="cove-nav new editing">
+      <input
+        autoFocus
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Wave title"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          if (e.key === 'Escape') setOpen(false);
+        }}
+        style={{ width: '100%', font: 'inherit' }}
+      />
+    </div>
   );
 }
 

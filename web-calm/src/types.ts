@@ -31,9 +31,10 @@ export interface TerminalCardData {
   type: 'terminal';
   title: string;
   lines: TermLine[];
-  // Optional pointer at a real Neige conversation. When set, the card hosts
-  // a live xterm/PTY instead of rendering the static `lines`.
-  convId?: string;
+  // Optional pointer at a kernel Terminal row (calm-server's
+  // `Terminal.id`). When set, the card hosts a live xterm/PTY rather than
+  // rendering the static `lines`.
+  terminalId?: string;
 }
 
 export interface DocCardData {

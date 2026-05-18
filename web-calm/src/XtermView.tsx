@@ -1,31 +1,32 @@
-import { useRef, useState } from 'react';
-import { useTerminalCore } from '@neige/shared/useTerminalCore';
-import type { ITheme } from '@xterm/xterm';
+import { useEffect, useRef, useState } from 'react';
+import { Terminal, type ITheme } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-// Cool-neutral light xterm theme matching Calm's palette.
+// Cool-neutral light xterm theme matching Calm's palette. Same numbers as
+// the previous useTerminalCore-backed version; only the wire below changed.
 const LIGHT_THEME: ITheme = {
-  background: '#ffffff00',          // transparent — card body shows through
+  background: '#ffffff00',
   foreground: '#2a2f3a',
   cursor: '#2a2f3a',
   cursorAccent: '#ffffff',
   selectionBackground: 'rgba(60, 100, 200, 0.22)',
-  black:    '#1a1d22',
-  red:      '#c43b3b',
-  green:    '#2f8c3c',
-  yellow:   '#a07a14',
-  blue:     '#3464c2',
-  magenta:  '#8b3b9a',
-  cyan:     '#2a8a8a',
-  white:    '#d9dbe0',
-  brightBlack:   '#5b626d',
-  brightRed:     '#e0625b',
-  brightGreen:   '#4faa5e',
-  brightYellow:  '#c89a30',
-  brightBlue:    '#5c87d8',
+  black: '#1a1d22',
+  red: '#c43b3b',
+  green: '#2f8c3c',
+  yellow: '#a07a14',
+  blue: '#3464c2',
+  magenta: '#8b3b9a',
+  cyan: '#2a8a8a',
+  white: '#d9dbe0',
+  brightBlack: '#5b626d',
+  brightRed: '#e0625b',
+  brightGreen: '#4faa5e',
+  brightYellow: '#c89a30',
+  brightBlue: '#5c87d8',
   brightMagenta: '#aa5cb8',
-  brightCyan:    '#4cb0b0',
-  brightWhite:   '#f6f7f9',
+  brightCyan: '#4cb0b0',
+  brightWhite: '#f6f7f9',
 };
 
 const DARK_THEME: ITheme = {
@@ -37,34 +38,128 @@ const DARK_THEME: ITheme = {
 };
 
 interface XtermViewProps {
-  convId: string;
+  /** `Terminal.id` from the kernel — addresses the daemon socket on the server. */
+  terminalId: string;
   theme?: 'light' | 'dark';
 }
 
 /**
- * Renders a live PTY inside a card body. Wraps `useTerminalCore` from
- * `@neige/shared` — the same protocol web/ and web-mobile/ use — so reconnect,
- * resize, scrollback and busy detection all behave identically.
+ * Direct bridge to calm-server's `/api/terminals/:id` WS endpoint. Frames
+ * are JSON-encoded `ClientMsg` / `DaemonMsg` from the `neige-session`
+ * Rust crate; bytes ride as plain JS arrays of u8 values.
+ *
+ * We deliberately do not depend on `@neige/shared/useTerminalCore` because
+ * that hook targets the old neige-server protocol. Calm's wire is simpler
+ * (no chat mode, no session/conv distinction) so we hand-roll here.
  */
-export function XtermView({ convId, theme = 'light' }: XtermViewProps) {
+export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed' | 'reconnecting'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>(
+    'connecting',
+  );
 
-  useTerminalCore({
-    containerRef,
-    sessionId: convId,
-    theme: theme === 'dark' ? DARK_THEME : LIGHT_THEME,
-    fontFamily: '"SF Mono", ui-monospace, "Menlo", monospace',
-    fontSize: 12.5,
-    onStatusChange: setStatus,
-  });
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const term = new Terminal({
+      theme: theme === 'dark' ? DARK_THEME : LIGHT_THEME,
+      fontFamily: '"SF Mono", ui-monospace, "Menlo", monospace',
+      fontSize: 12.5,
+      convertEol: true,
+      allowProposedApi: true,
+      cursorBlink: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(container);
+    try {
+      fit.fit();
+    } catch {
+      /* container may not be laid out yet on first frame */
+    }
+
+    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
+      location.host
+    }/api/terminals/${encodeURIComponent(terminalId)}`;
+    const ws = new WebSocket(wsUrl);
+
+    const send = (msg: unknown) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      }
+    };
+
+    ws.onopen = () => {
+      setStatus('open');
+      send({ Attach: { cols: term.cols, rows: term.rows } });
+    };
+    ws.onmessage = (e) => {
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
+      } catch {
+        return;
+      }
+      // DaemonMsg variants from neige-session: `Hello`, `Stdout`,
+      // `HelloChat`, `ChatEvent`, `ChildExited`. Only the terminal-mode
+      // ones matter here.
+      if ('Hello' in msg) {
+        const replay = (msg.Hello as { replay: number[] }).replay;
+        term.write(Uint8Array.from(replay));
+        return;
+      }
+      if ('Stdout' in msg) {
+        const bytes = msg.Stdout as number[];
+        term.write(Uint8Array.from(bytes));
+        return;
+      }
+      if ('ChildExited' in msg) {
+        const code = (msg.ChildExited as { code: number | null }).code;
+        term.writeln(
+          `\r\n\x1b[2m[process exited${code != null ? ` (code ${code})` : ''}]\x1b[0m`,
+        );
+        ws.close();
+        return;
+      }
+      // Hello/Chat events: ignored — calm-server doesn't use chat mode for
+      // built-in terminal cards.
+    };
+    ws.onclose = () => setStatus('closed');
+    ws.onerror = () => setStatus('closed');
+
+    const dataSub = term.onData((d) => {
+      const bytes = Array.from(new TextEncoder().encode(d));
+      send({ Stdin: bytes });
+    });
+
+    const onResize = () => {
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      send({ Resize: { cols: term.cols, rows: term.rows } });
+    };
+    const ro = new ResizeObserver(onResize);
+    ro.observe(container);
+
+    return () => {
+      ro.disconnect();
+      dataSub.dispose();
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+      term.dispose();
+    };
+  }, [terminalId, theme]);
 
   return (
     <div className="xterm-view">
       <div ref={containerRef} className="xterm-container" />
-      {status !== 'open' && (
-        <div className="xterm-status">{status}…</div>
-      )}
+      {status !== 'open' && <div className="xterm-status">{status}…</div>}
     </div>
   );
 }
