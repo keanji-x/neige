@@ -84,6 +84,10 @@ pub struct Card {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct NewCard {
+    /// Defaulted so the REST handler can override from the `:wave_id` path
+    /// param without forcing every client body to repeat it. Direct repo
+    /// callers must still set this — passing "" produces a NotFound.
+    #[serde(default)]
     pub wave_id: String,
     pub kind: String,
     pub sort: Option<f64>,
