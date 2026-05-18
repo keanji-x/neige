@@ -4,6 +4,7 @@ import { Sidebar, TitleBar } from './ui';
 import { CovePage, TodayPage, WavePage } from './pages';
 import { adaptCard, adaptCove, adaptWave } from './api/adapt';
 import { useKernel } from './hooks/useKernel';
+import { useTodayTerminal } from './hooks/useTodayTerminal';
 import type { Cove, Route, Wave, WaveCardData } from './types';
 import type { AddPanelKind } from './ui';
 
@@ -12,6 +13,7 @@ export function CalmApp() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   const k = useKernel();
+  const todayTerm = useTodayTerminal();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -98,34 +100,6 @@ export function CalmApp() {
     [k, route],
   );
 
-  /**
-   * Today's "+ Quick terminal" CTA. Spins up a scratch wave (and a scratch
-   * cove if the DB is empty), adds a terminal card, and navigates into it.
-   * One click → live PTY. Falls back to a console warn if any step fails.
-   */
-  const quickTerminal = useCallback(async () => {
-    try {
-      let coveId = k.coves[0]?.id;
-      if (!coveId) {
-        const cove = await k.createCove('Scratch', '#6a8');
-        coveId = cove.id;
-      }
-      const title =
-        'Scratch — ' +
-        new Date().toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-      const wave = await k.createWave(coveId, title);
-      // Don't await terminal creation before navigating — let the WS event
-      // fold the card in once the kernel finishes. Navigation feels instant.
-      void k.createTerminalCard(wave.id);
-      go({ name: 'wave', id: wave.id });
-    } catch (err) {
-      console.warn('[Calm] quick terminal failed:', err);
-    }
-  }, [k, go]);
-
   const moveCardTo = useCallback(
     async (_waveId: string, from: number, to: number) => {
       if (from === to) return;
@@ -171,7 +145,9 @@ export function CalmApp() {
           waves={waves}
           coves={coves}
           onGo={go}
-          onQuickTerminal={quickTerminal}
+          todayTerminalId={todayTerm.today?.terminalId ?? null}
+          todayError={todayTerm.error}
+          onResetTodayTerminal={todayTerm.reset}
         />
       );
     }
@@ -183,6 +159,10 @@ export function CalmApp() {
           cove={cove}
           waves={waves.filter((w) => w.coveId === cove.id)}
           onGo={go}
+          onCreateWave={async (coveId, title) => {
+            const w = await k.createWave(coveId, title);
+            go({ name: 'wave', id: w.id });
+          }}
         />
       );
     }
@@ -222,10 +202,6 @@ export function CalmApp() {
           onGo={go}
           onCreateCove={async (name, color) => {
             await k.createCove(name, color);
-          }}
-          onCreateWave={async (coveId, title) => {
-            const w = await k.createWave(coveId, title);
-            go({ name: 'wave', id: w.id });
           }}
         />
         <main className="page">

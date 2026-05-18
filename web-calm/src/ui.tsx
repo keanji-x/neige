@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { XtermView } from './XtermView';
 import type {
@@ -102,6 +102,7 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
   return (
     <span className="glyph">
       {status === 'running' ? (
+        // Live pulse — accent color.
         <span
           className="live-dot"
           style={{
@@ -112,7 +113,9 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
             display: 'block',
           }}
         />
-      ) : (
+      ) : status === 'waiting' ? (
+        // Needs-you halo — warn color with soft glow. Used only when a
+        // plugin explicitly says the wave is blocked on the user.
         <span
           style={{
             width: 8,
@@ -121,6 +124,18 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
             background: 'var(--warn)',
             display: 'block',
             boxShadow: '0 0 0 4px var(--warn-soft)',
+          }}
+        />
+      ) : (
+        // Idle — no overlay yet. Small dim dot, no halo. Calm.
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'var(--text-3, oklch(60% 0.005 245))',
+            opacity: 0.55,
+            display: 'block',
           }}
         />
       )}
@@ -141,38 +156,48 @@ export function WaveRow({
   showCove?: boolean;
   onClick?: () => void;
 }) {
+  // Avoid the "double-bullet" effect: only emit the `·` separator when both
+  // a cove tag AND a `now` line are going to render. Empty `now` (i.e. no
+  // plugin posted activity text) drops out cleanly.
+  const showCoveTag = showCove && !!cove;
+  const showNow = !!wave.now;
+  const showEta = !!wave.eta;
+  const showProgress = wave.status === 'running' && wave.progress > 0;
+
   return (
     <button className="wave-row" onClick={onClick}>
       <WaveGlyph status={wave.status} />
       <div className="body">
         <div className="t">{wave.title}</div>
-        <div className="s">
-          {showCove && cove && (
-            <>
+        {(showCoveTag || showNow) && (
+          <div className="s">
+            {showCoveTag && (
               <span className="cove-tag">
-                <i style={{ background: cove.color }} />
-                {cove.name}
+                <i style={{ background: cove!.color }} />
+                {cove!.name}
               </span>
-              <span>·</span>
-            </>
-          )}
-          <span>{wave.now}</span>
-        </div>
-      </div>
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-end',
-          gap: 6,
-          minWidth: 110,
-        }}
-      >
-        {wave.status === 'running' && (
-          <ProgressBar value={wave.progress} status="running" />
+            )}
+            {showCoveTag && showNow && <span>·</span>}
+            {showNow && <span>{wave.now}</span>}
+          </div>
         )}
-        <span className="when">{wave.eta}</span>
       </div>
+      {(showProgress || showEta) && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 6,
+            minWidth: 110,
+          }}
+        >
+          {showProgress && (
+            <ProgressBar value={wave.progress} status="running" />
+          )}
+          {showEta && <span className="when">{wave.eta}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -319,17 +344,16 @@ export function Sidebar({
   route,
   onGo,
   onCreateCove,
-  onCreateWave,
 }: {
   coves: Cove[];
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
-  /** When supplied, the sidebar renders a `+ New Cove` button below the
-   *  Coves list. Used to bootstrap a fresh kernel — once we have a real
-   *  plugin layer this moves into a command-palette / settings panel. */
+  /** Bootstrap affordance: renders a small `+ New Cove` row below the
+   *  Coves list. Lives here (not in CovePage) because creating the *first*
+   *  cove has no other home. Wave creation, by contrast, lives inside
+   *  CovePage where the cove context is already established. */
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
-  onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   return (
@@ -386,9 +410,6 @@ export function Sidebar({
         );
       })}
       {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
-      {onCreateWave && route.name === 'cove' && (
-        <NewWaveButton coveId={route.coveId} onCreate={onCreateWave} />
-      )}
 
       <span className="sp" />
       <div className="me-row">
@@ -402,12 +423,12 @@ export function Sidebar({
   );
 }
 
-// ---------------- NewCove / NewWave bootstrap buttons ----------------
+// ---------------- NewCoveButton ----------------
 //
-// Native `prompt()` for now — a real picker (color swatches, validation,
-// inline editing) lands when the plugin host is in place and we have a
-// proper "command palette" UX to put them in. These are the *bootstrap*
-// affordances: they exist so a fresh DB can be populated without curl.
+// Lives in the sidebar because creating the *first* cove has no other home;
+// every subsequent affordance (new wave, new card) lives inside the page
+// it belongs to. Bootstraps a random color from a fixed palette — a real
+// color picker can land in a settings/command-palette pass later.
 
 const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
@@ -416,53 +437,79 @@ function NewCoveButton({
 }: {
   onCreate: (name: string, color: string) => void | Promise<void>;
 }) {
-  const handle = async () => {
-    const name = window.prompt('New cove name?');
-    if (!name || !name.trim()) return;
-    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
-    await onCreate(name.trim(), color);
-  };
-  return (
-    <button className="cove-nav" onClick={handle} title="New cove">
-      <span className="swatch-wrap">
-        <span
-          className="swatch"
-          style={{
-            background: 'transparent',
-            border: '1px dashed var(--text-3, #999)',
-          }}
-        />
-      </span>
-      <span className="lbl">+ New cove</span>
-    </button>
-  );
-}
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
-function NewWaveButton({
-  coveId,
-  onCreate,
-}: {
-  coveId: string;
-  onCreate: (coveId: string, title: string) => void | Promise<void>;
-}) {
-  const handle = async () => {
-    const title = window.prompt('New wave title?');
-    if (!title || !title.trim()) return;
-    await onCreate(coveId, title.trim());
+  // When the inline form opens, focus the input on the next tick so the
+  // ref is bound. Cheaper than a separate effect for one-shot focus.
+  const openForm = () => {
+    setOpen(true);
+    queueMicrotask(() => inputRef.current?.focus());
   };
+  const close = () => {
+    setOpen(false);
+    setName('');
+  };
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      close();
+      return;
+    }
+    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    await onCreate(trimmed, color);
+    close();
+  };
+
+  if (!open) {
+    return (
+      <button className="cove-nav" onClick={openForm} title="New cove">
+        <span className="swatch-wrap">
+          <span
+            className="swatch"
+            style={{
+              background: 'transparent',
+              border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
+            }}
+          />
+        </span>
+        <span className="lbl" style={{ color: 'var(--text-2)' }}>+ New cove</span>
+      </button>
+    );
+  }
   return (
-    <button className="cove-nav" onClick={handle} title="New wave">
+    <div className="cove-nav" style={{ paddingTop: 4, paddingBottom: 4 }}>
       <span className="swatch-wrap">
         <span
           className="swatch"
           style={{
             background: 'transparent',
-            border: '1px dashed var(--text-3, #999)',
+            border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
           }}
         />
       </span>
-      <span className="lbl">+ New wave</span>
-    </button>
+      <input
+        ref={inputRef}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          else if (e.key === 'Escape') close();
+        }}
+        onBlur={() => void submit()}
+        placeholder="Cove name"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          font: 'inherit',
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          color: 'var(--text)',
+        }}
+      />
+    </div>
   );
 }
 
@@ -472,31 +519,23 @@ export type AddPanelKind = 'terminal' | 'doc' | 'plan';
 
 export function AddPanel({
   onAdd,
-  hasPlan,
 }: {
   onAdd: (type: AddPanelKind) => void;
-  hasPlan: boolean;
+  /** Carried for API stability; ignored while only `terminal` is wired. */
+  hasPlan?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  if (!open) {
-    return (
-      <button className="add-panel" onClick={() => setOpen(true)}>
-        + Add panel
-      </button>
-    );
-  }
-  const pick = (type: AddPanelKind) => {
-    onAdd(type);
-    setOpen(false);
-  };
+  // While the plugin host is still M3 work, only the built-in `terminal`
+  // card is actually wired end-to-end. Showing menu items for `doc` /
+  // `plan` would be a promise we can't keep, so the affordance collapses
+  // to a single direct-action button. When plugins land we'll restore the
+  // multi-option menu (driven by the manifest list rather than hard-coded).
   return (
-    <div className="add-panel-menu">
-      <button onClick={() => pick('terminal')}>New terminal</button>
-      <button onClick={() => pick('doc')}>New note</button>
-      {!hasPlan && <button onClick={() => pick('plan')}>New plan</button>}
-      <button className="cancel" onClick={() => setOpen(false)}>
-        cancel
-      </button>
-    </div>
+    <button
+      className="add-panel"
+      onClick={() => onAdd('terminal')}
+      title="New terminal"
+    >
+      + New terminal
+    </button>
   );
 }

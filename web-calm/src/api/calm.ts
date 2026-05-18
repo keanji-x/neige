@@ -120,3 +120,10 @@ export const createTerminal = (cardId: string, b: NewTerminalBody = {}) =>
     `/api/cards/${encodeURIComponent(cardId)}/terminal`,
     b,
   );
+
+/** Look up the Terminal a card owns; 404s if the card has no terminal. */
+export const getTerminalForCard = (cardId: string) =>
+  request<KernelTerminal>(
+    'GET',
+    `/api/cards/${encodeURIComponent(cardId)}/terminal`,
+  );

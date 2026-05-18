@@ -32,7 +32,25 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/cards/{card_id}/terminal", post(create))
+    Router::new().route(
+        "/api/cards/{card_id}/terminal",
+        post(create).get(get_for_card),
+    )
+}
+
+/// Look up the Terminal row a card owns. Returns 404 if the card has no
+/// terminal (yet). The UI uses this to validate a card_id cached in
+/// localStorage before attempting a WS attach to its terminal.
+async fn get_for_card(
+    State(s): State<AppState>,
+    Path(card_id): Path<String>,
+) -> Result<Json<Terminal>> {
+    let term = s
+        .repo
+        .terminal_get_by_card(&card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("terminal for card {card_id}")))?;
+    Ok(Json(term))
 }
 
 #[derive(Deserialize, Debug, Default)]

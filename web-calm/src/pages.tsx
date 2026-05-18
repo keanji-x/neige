@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import {
   AddPanel,
@@ -11,27 +11,21 @@ import {
   type AddPanelKind,
 } from './ui';
 import type { Cove, Route, Wave } from './types';
+import { XtermView } from './XtermView';
 
 export { Sidebar };
 
 // ============================================================
-// Calendar helpers + synthetic schedule (mirrors design's pages.jsx).
-// `d` is days-from-today; `h` is the 24h start hour.
+// Calendar helpers.
+//
+// The mockup ported a synthetic `SURF_SCHEDULE` keyed on the design's
+// hand-written wave ids (`w-001` etc); under real kernel data those ids
+// never appear, so the calendar would be permanently empty. We instead
+// surface a calm "Nothing scheduled." state and wait for a scheduling
+// plugin to write proper overlays. Drop-in replacement when that lands:
+// derive `CalEvent[]` from overlays where `kind === "scheduled"` and
+// `payload = { date, hour, dur }`.
 // ============================================================
-
-interface ScheduleSlot { d: number; h: number; dur: number; }
-
-const SURF_SCHEDULE: Record<string, ScheduleSlot[]> = {
-  'w-001': [{ d: 0, h: 9,  dur: 2 }, { d: 1, h: 14, dur: 1 }, { d: 3, h: 13, dur: 2 }],
-  'w-010': [{ d: 0, h: 11, dur: 1 }, { d: 2, h: 10, dur: 1 }],
-  'w-011': [{ d: 0, h: 14, dur: 1 }],
-  'w-020': [{ d: 0, h: 15, dur: 3 }, { d: 4, h: 9,  dur: 2 }],
-  'w-021': [{ d: 0, h: 16, dur: 1 }],
-  'w-030': [{ d: 1, h: 10, dur: 2 }, { d: 4, h: 11, dur: 2 }],
-  'w-031': [{ d: 2, h: 14, dur: 2 }],
-  'w-012': [{ d: 3, h: 11, dur: 3 }, { d: 6, h: 10, dur: 2 }],
-  'w-013': [{ d: -2, h: 15, dur: 1 }],
-};
 
 const SHORT_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
@@ -73,15 +67,17 @@ export function TodayPage({
   waves,
   coves,
   onGo,
-  onQuickTerminal,
+  todayTerminalId,
+  todayError,
+  onResetTodayTerminal,
 }: {
   waves: Wave[];
   coves: Cove[];
   onGo: (r: Route) => void;
-  /** Bootstrap: create a scratch wave (and cove, if none exist) with a live
-   *  terminal card, then navigate into it. Optional — TodayPage degrades
-   *  gracefully if not supplied (button hidden). */
-  onQuickTerminal?: () => Promise<void> | void;
+  /** When defined, the home panel hosts a live `<XtermView>` for this id. */
+  todayTerminalId?: string | null;
+  todayError?: Error | null;
+  onResetTodayTerminal?: () => void;
 }) {
   const today0 = useMemo(() => {
     const t = new Date();
@@ -89,24 +85,19 @@ export function TodayPage({
     return t;
   }, []);
 
-  const events = useMemo<CalEvent[]>(() => {
-    const arr: CalEvent[] = [];
-    for (const w of waves) {
-      for (const slot of SURF_SCHEDULE[w.id] || []) {
-        arr.push({ wave: w, date: addDays(today0, slot.d), h: slot.h, dur: slot.dur });
-      }
-    }
-    return arr;
-  }, [waves, today0]);
+  // No scheduling plugin yet — the calendar renders its shell with an
+  // empty list. When a plugin defines a `scheduled` overlay this is the
+  // single line that should fold it in.
+  const events = useMemo<CalEvent[]>(() => [], []);
 
   return (
     <div className="surf">
       <section className="surf-main">
         <SurfClock waves={waves} />
-        <TodayCommand
-          waves={waves}
-          onGo={onGo}
-          onQuickTerminal={onQuickTerminal}
+        <TodayTerminalPanel
+          terminalId={todayTerminalId ?? null}
+          error={todayError ?? null}
+          onReset={onResetTodayTerminal}
         />
       </section>
       <aside className="surf-rail">
@@ -122,30 +113,25 @@ export function TodayPage({
   );
 }
 
-// ---------------- TodayCommand — replaces the design's static SurfTerminal ----------------
+// ---------------- TodayTerminalPanel — the real default PTY on Today ----------------
 //
-// Now that terminals live in waves (one PTY per terminal card), having a
-// fake terminal on Today made no sense. This panel surfaces the real
-// equivalents: a one-click scratch-terminal launcher and quick links into
-// recent waves.
+// Replaces the original mockup's static `SurfTerminal` with an actual live
+// shell. The terminal binds to a single per-browser "Scratch / Today"
+// card (resolved by `useTodayTerminal` upstream and passed in as
+// `terminalId`). While the resolver runs we show a calm "Booting…" line.
 //
-// Mounting a live `<XtermView>` directly on Today is intentionally not done
-// — that would require deciding *which* terminal it should host (most
-// recent? sticky? user-chosen?). The launcher button is the honest answer:
-// one click, you get a wave with a live PTY, you're in.
+// `onReset` lets the upstream wipe the cached binding (e.g. if a future
+// "kill" affordance lands), forcing a fresh bootstrap on next render.
 
-function TodayCommand({
-  waves,
-  onGo,
-  onQuickTerminal,
+function TodayTerminalPanel({
+  terminalId,
+  error,
+  onReset,
 }: {
-  waves: Wave[];
-  onGo: (r: Route) => void;
-  onQuickTerminal?: () => Promise<void> | void;
+  terminalId: string | null;
+  error: Error | null;
+  onReset?: () => void;
 }) {
-  const recentWaves = waves.slice(0, 8);
-  const noWaves = waves.length === 0;
-
   return (
     <div className="surf-term">
       <div className="surf-term-head">
@@ -153,62 +139,60 @@ function TodayCommand({
         <span className="term-dot b" />
         <span className="term-dot c" />
         <span className="term-title">~ / neige · today</span>
-        <span className="surf-term-host">yuki@neige</span>
-      </div>
-      <div className="surf-term-body">
-        {onQuickTerminal && (
-          <div className="surf-term-line">
-            <button
-              className="go"
-              onClick={() => void onQuickTerminal()}
-              style={{
-                font: 'inherit',
-                padding: '6px 12px',
-                borderRadius: 6,
-                cursor: 'pointer',
-              }}
-            >
-              + Quick terminal
-            </button>
-            <span className="dim" style={{ marginLeft: 12 }}>
-              spawn a scratch wave with a live PTY
-            </span>
-          </div>
+        {onReset && (
+          <button
+            className="surf-term-host"
+            onClick={onReset}
+            title="Forget the cached Today terminal and bootstrap a fresh one"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              font: 'inherit',
+              color: 'inherit',
+              padding: 0,
+            }}
+          >
+            reset ↻
+          </button>
         )}
-        <div className="surf-term-gap" />
-        {noWaves ? (
-          <div className="surf-term-line dim">
-            no waves yet — create a cove and a wave from the sidebar, or hit
-            “Quick terminal” above.
-          </div>
-        ) : (
-          <>
-            <div className="surf-term-line dim">recent waves:</div>
-            {recentWaves.map((w) => (
-              <div key={w.id} className="surf-term-line">
+      </div>
+      <div className="surf-term-body" style={{ padding: 0 }}>
+        {error ? (
+          <div className="surf-term-line" style={{ padding: 16, color: 'var(--warn, #c00)' }}>
+            kernel error: {error.message}
+            {onReset && (
+              <>
+                {' · '}
                 <button
-                  className="surf-cmd"
-                  onClick={() => onGo({ name: 'wave', id: w.id })}
+                  onClick={onReset}
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'inherit', textDecoration: 'underline', cursor: 'pointer',
                     font: 'inherit',
-                    color: 'inherit',
-                    cursor: 'pointer',
                   }}
-                  title={`Open ${w.title}`}
                 >
-                  {w.title}
+                  retry
                 </button>
-                <span className="dim" style={{ marginLeft: 10 }}>
-                  {w.status === 'running' ? 'running' : 'waiting'} · {w.now}
-                </span>
-              </div>
-            ))}
-          </>
+              </>
+            )}
+          </div>
+        ) : terminalId ? (
+          <LiveTerminalSlot terminalId={terminalId} />
+        ) : (
+          <div className="surf-term-line dim" style={{ padding: 16 }}>
+            booting today's terminal…
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
+  return (
+    <div style={{ minHeight: 360 }}>
+      <XtermView terminalId={terminalId} />
     </div>
   );
 }
@@ -543,13 +527,27 @@ export function CovePage({
   cove,
   waves,
   onGo,
+  onCreateWave,
 }: {
   cove: Cove;
   waves: Wave[];
   onGo: (r: Route) => void;
+  /** Called when the user submits the inline `+ New wave` compose bar.
+   *  Optional so CovePage degrades gracefully if a host doesn't wire it. */
+  onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
 }) {
   const running = waves.filter((w) => w.status === 'running');
   const waiting = waves.filter((w) => w.status === 'waiting');
+  const idle    = waves.filter((w) => w.status === 'idle');
+  // Derived eyebrow — the kernel has no `subtitle` field, so we compose
+  // one from wave counts. Empty when the cove is empty, in which case
+  // the eyebrow drops to just the color chip.
+  const eyebrow = (() => {
+    if (waves.length === 0) return '';
+    const noun = waves.length === 1 ? 'wave' : 'waves';
+    if (running.length === 0) return `${waves.length} ${noun}`;
+    return `${waves.length} ${noun} · ${running.length} running`;
+  })();
 
   return (
     <div className="col wide">
@@ -569,18 +567,18 @@ export function CovePage({
             background: cove.color, display: 'inline-block',
           }}
         />
-        {cove.subtitle}
+        {eyebrow}
       </div>
       <h1 className="h-display">{cove.name}.</h1>
 
       {waves.length === 0 && (
         <div
           style={{
-            padding: '48px 0', color: 'var(--text-3)',
+            padding: '32px 0 8px', color: 'var(--text-3)',
             fontSize: 15, textAlign: 'center',
           }}
         >
-          This Cove is quiet. Start a Wave from the compose bar below.
+          This Cove is quiet. Start a Wave below.
         </div>
       )}
 
@@ -610,6 +608,108 @@ export function CovePage({
           ))}
         </Section>
       )}
+      {idle.length > 0 && (
+        <Section label="Idle">
+          {idle.map((w) => (
+            <WaveRow
+              key={w.id}
+              wave={w}
+              cove={cove}
+              showCove={false}
+              onClick={() => onGo({ name: 'wave', id: w.id })}
+            />
+          ))}
+        </Section>
+      )}
+
+      {onCreateWave && (
+        <NewWaveCTA
+          onSubmit={(title) => onCreateWave(cove.id, title)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------- NewWaveCTA — CovePage's compose-bar ----------------
+//
+// Bottom-of-page ghost button by default; expands inline to a single-line
+// text input on click. Visually rhymes with WavePage's `+ Add panel` so
+// the "compose at the bottom" idiom is consistent across pages.
+
+function NewWaveCTA({
+  onSubmit,
+}: {
+  onSubmit: (title: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const openForm = () => {
+    setOpen(true);
+    queueMicrotask(() => inputRef.current?.focus());
+  };
+  const close = () => {
+    setOpen(false);
+    setTitle('');
+  };
+  const submit = async () => {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      close();
+      return;
+    }
+    await onSubmit(trimmed);
+    close();
+  };
+
+  if (!open) {
+    return (
+      <button
+        className="add-panel"
+        onClick={openForm}
+        title="New wave"
+        style={{ marginTop: 16 }}
+      >
+        + New wave
+      </button>
+    );
+  }
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: '10px 14px',
+        border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
+        borderRadius: 8,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      <span style={{ color: 'var(--text-3)', flexShrink: 0 }}>›</span>
+      <input
+        ref={inputRef}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          else if (e.key === 'Escape') close();
+        }}
+        onBlur={() => void submit()}
+        placeholder="Wave title…"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          font: 'inherit',
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          color: 'var(--text)',
+        }}
+      />
+      <span style={{ color: 'var(--text-3)', fontSize: 12 }}>↵</span>
     </div>
   );
 }

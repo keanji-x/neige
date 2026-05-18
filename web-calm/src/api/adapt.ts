@@ -19,8 +19,29 @@ import type {
   KernelWave,
 } from './wire';
 
+/**
+ * Adapt a kernel Cove to the UI shape.
+ *
+ * The mockup carried a `subtitle` ("Personal site", "Client · e-commerce"),
+ * which the kernel does not store. Rather than adding a column for it, we
+ * leave the field present but blank — the page can derive a secondary
+ * (wave count, running count) when it wants something in the eyebrow.
+ */
 export function adaptCove(k: KernelCove): Cove {
   return { id: k.id, name: k.name, subtitle: '', color: k.color };
+}
+
+/**
+ * Derive a small text summary suitable for a cove's secondary line, e.g.
+ * `"3 waves · 1 running"`. Returns an empty string for an empty cove so
+ * the renderer can drop the line entirely.
+ */
+export function coveSummary(waves: Wave[]): string {
+  if (waves.length === 0) return '';
+  const running = waves.filter((w) => w.status === 'running').length;
+  const noun = waves.length === 1 ? 'wave' : 'waves';
+  if (running === 0) return `${waves.length} ${noun}`;
+  return `${waves.length} ${noun} · ${running} running`;
 }
 
 /**
@@ -35,17 +56,23 @@ export function adaptCove(k: KernelCove): Cove {
  * pick by `plugin_id` priority.
  */
 export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
-  let status: WaveStatus = 'waiting';
+  // Defaults: idle, no progress, no eta/now text. The UI hides empty
+  // strings rather than rendering placeholder dashes, so a wave with no
+  // overlays reads as a quiet structural row, not a half-broken status pill.
+  let status: WaveStatus = 'idle';
   let progress = 0;
-  let eta = '—';
-  let now = '—';
+  let eta = '';
+  let now = '';
 
   for (const o of overlays) {
     if (o.entity_kind !== 'wave' || o.entity_id !== k.id) continue;
     const p = o.payload as Record<string, unknown> | null;
     if (!p) continue;
     if (o.kind === 'status' && typeof p.state === 'string') {
-      status = p.state === 'running' ? 'running' : 'waiting';
+      // Only the recognized states map back to the UI enum; anything else
+      // leaves the wave idle (forward-compatible with future plugin states).
+      if (p.state === 'running') status = 'running';
+      else if (p.state === 'waiting') status = 'waiting';
     } else if (o.kind === 'progress' && typeof p.value === 'number') {
       progress = p.value;
     } else if (o.kind === 'eta' && typeof p.text === 'string') {
