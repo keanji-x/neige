@@ -31,7 +31,9 @@ export interface KernelActions {
   refetchWavesIn: (coveId: string) => Promise<void>;
   refetchWaveDetail: (waveId: string) => Promise<void>;
   createCove: (name: string, color: string) => Promise<KernelCove>;
+  renameCove: (coveId: string, name: string) => Promise<KernelCove>;
   createWave: (coveId: string, title: string) => Promise<KernelWave>;
+  renameWave: (waveId: string, title: string) => Promise<KernelWave>;
   /**
    * Creates a terminal card in two phases: (1) POST the Card row with
    * `kind:"terminal"`, (2) POST `/api/cards/:id/terminal` to spawn the PTY,
@@ -233,8 +235,18 @@ export function useKernel(): KernelState & KernelActions {
     [],
   );
 
+  const renameCove = useCallback(
+    async (coveId: string, name: string) => api.updateCove(coveId, { name }),
+    [],
+  );
+
   const createWave = useCallback(
     async (coveId: string, title: string) => api.createWave({ cove_id: coveId, title }),
+    [],
+  );
+
+  const renameWave = useCallback(
+    async (waveId: string, title: string) => api.updateWave(waveId, { title }),
     [],
   );
 
@@ -282,7 +294,9 @@ export function useKernel(): KernelState & KernelActions {
     refetchWavesIn,
     refetchWaveDetail,
     createCove,
+    renameCove,
     createWave,
+    renameWave,
     createCard,
     createTerminalCard,
     deleteCove,

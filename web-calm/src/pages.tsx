@@ -528,16 +528,18 @@ export function CovePage({
   waves,
   onGo,
   onCreateWave,
+  onRenameCove,
   onDeleteCove,
 }: {
   cove: Cove;
   waves: Wave[];
   onGo: (r: Route) => void;
-  /** Called when the user submits the inline `+ New wave` compose bar.
-   *  Optional so CovePage degrades gracefully if a host doesn't wire it. */
+  /** Called when the user submits the inline `+ New wave` compose bar. */
   onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
-  /** Called from the kebab menu's "Delete cove" item. Confirmation is the
-   *  caller's responsibility (so we don't double-prompt). */
+  /** Called from the inline rename input on the header. */
+  onRenameCove?: (coveId: string, name: string) => void | Promise<void>;
+  /** Called from the × button on the header. CovePage shows its own
+   *  `window.confirm`, so callers don't need to double-prompt. */
   onDeleteCove?: (coveId: string) => void | Promise<void>;
 }) {
   const running = waves.filter((w) => w.status === 'running');
@@ -573,9 +575,23 @@ export function CovePage({
         />
         {eyebrow}
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12 }}>
-        <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{cove.name}.</h1>
-        {onDeleteCove && <CoveActionsMenu coveName={cove.name} onDelete={() => onDeleteCove(cove.id)} />}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {onRenameCove ? (
+          <EditableTitle
+            value={cove.name}
+            ariaLabel="Cove name"
+            onSave={(name) => onRenameCove(cove.id, name)}
+          />
+        ) : (
+          <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{cove.name}.</h1>
+        )}
+        {onDeleteCove && (
+          <DeleteButton
+            label={`Delete cove "${cove.name}"`}
+            confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
+            onDelete={() => onDeleteCove(cove.id)}
+          />
+        )}
       </div>
 
       {waves.length === 0 && (
@@ -638,103 +654,154 @@ export function CovePage({
   );
 }
 
-// ---------------- CoveActionsMenu — kebab in the cove header ----------------
+// ---------------- Header actions: edit + delete ----------------
 //
-// Single-option for now (Delete cove) but built as a menu so renaming /
-// recolor land in the same place later.
+// Two reusable single-purpose buttons that sit next to a page title.
+// Single-action affordances beat a kebab menu here — the icon itself
+// says what'll happen, and there's no menu to open and close.
 
-function CoveActionsMenu({
-  coveName,
-  onDelete,
+function IconButton({
+  glyph,
+  label,
+  tone = 'neutral',
+  onClick,
+  fontSize = 14,
 }: {
-  coveName: string;
-  onDelete: () => void | Promise<void>;
+  glyph: React.ReactNode;
+  label: string;
+  /** `neutral` greys-up on hover; `danger` shifts to warn-red. */
+  tone?: 'neutral' | 'danger';
+  onClick: () => void;
+  fontSize?: number;
 }) {
-  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+  const dangerStyle = {
+    background: hover ? 'var(--warn-soft)' : 'transparent',
+    color: hover ? 'var(--warn)' : 'var(--text-3)',
+  };
+  const neutralStyle = {
+    background: hover ? 'oklch(0% 0 0 / 0.04)' : 'transparent',
+    color: hover ? 'var(--text-2)' : 'var(--text-3)',
+  };
+  const tonal = tone === 'danger' ? dangerStyle : neutralStyle;
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={label}
+      aria-label={label}
+      style={{
+        width: 26, height: 26,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: 'none', borderRadius: 6,
+        font: 'inherit', fontSize, lineHeight: 1, cursor: 'pointer',
+        transition: 'color 0.1s, background 0.1s',
+        ...tonal,
+      }}
+    >
+      {glyph}
+    </button>
+  );
+}
 
-  // Close on outside click so the menu can't get stuck.
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+/**
+ * Title with an inline-edit affordance.
+ *
+ * The pencil button switches the h1 to a same-sized input. Enter / blur
+ * save (no-op if unchanged or empty); Escape cancels. The input inherits
+ * the h1's visual styling so editing feels like the title sliding open,
+ * not a popover. The trailing period in the design (`cove.name + '.'`)
+ * is rendered by the parent, not stored — the editor edits the raw name.
+ */
+function EditableTitle({
+  value,
+  onSave,
+  ariaLabel,
+}: {
+  value: string;
+  onSave: (next: string) => void | Promise<void>;
+  ariaLabel: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // External value changes (e.g. WS event from another tab) should not
+  // clobber an in-flight edit; only sync `draft` when not editing.
   useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [open]);
+    if (!editing) setDraft(value);
+  }, [editing, value]);
 
-  const askDelete = async () => {
-    setOpen(false);
-    const sure = window.confirm(
-      `Delete cove "${coveName}"? Its waves and cards will be deleted too. This cannot be undone.`,
-    );
-    if (!sure) return;
-    await onDelete();
+  const enter = () => {
+    setDraft(value);
+    setEditing(true);
+    queueMicrotask(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+  const cancel = () => setEditing(false);
+  const save = async () => {
+    const trimmed = draft.trim();
+    setEditing(false);
+    if (!trimmed || trimmed === value) return;
+    await onSave(trimmed);
   };
 
-  return (
-    <div ref={wrapRef} style={{ position: 'relative' }}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title="Cove actions"
-        aria-label="Cove actions"
-        aria-expanded={open}
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void save();
+          else if (e.key === 'Escape') cancel();
+        }}
+        onBlur={() => void save()}
+        aria-label={ariaLabel}
+        className="h-display"
         style={{
-          width: 28, height: 28,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flex: 1,
+          minWidth: 0,
           background: 'transparent',
           border: 'none',
-          borderRadius: 6,
-          color: 'var(--text-3)',
-          font: 'inherit',
-          fontSize: 18,
-          lineHeight: 1,
-          cursor: 'pointer',
+          outline: 'none',
+          padding: 0,
+          margin: 0,
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = 'oklch(0% 0 0 / 0.04)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-      >
-        ⋯
-      </button>
-      {open && (
-        <div
-          role="menu"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 4px)',
-            right: 0,
-            minWidth: 160,
-            padding: 4,
-            background: 'var(--paper)',
-            border: '1px solid var(--hairline)',
-            borderRadius: 8,
-            boxShadow: '0 4px 16px oklch(0% 0 0 / 0.08)',
-            zIndex: 10,
-          }}
-        >
-          <button
-            role="menuitem"
-            onClick={askDelete}
-            style={{
-              width: '100%',
-              textAlign: 'left',
-              padding: '8px 12px',
-              background: 'transparent',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              font: 'inherit',
-              fontSize: 13,
-              color: 'var(--warn, #c00)',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--warn-soft, oklch(96% 0.03 30))'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            Delete cove
-          </button>
-        </div>
-      )}
-    </div>
+      />
+    );
+  }
+  return (
+    <>
+      <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{value}.</h1>
+      <IconButton glyph="✎" label={`Rename "${value}"`} onClick={enter} />
+    </>
+  );
+}
+
+function DeleteButton({
+  label,
+  confirmMessage,
+  onDelete,
+}: {
+  label: string;
+  confirmMessage: string;
+  onDelete: () => void | Promise<void>;
+}) {
+  return (
+    <IconButton
+      glyph="×"
+      label={label}
+      tone="danger"
+      fontSize={18}
+      onClick={async () => {
+        if (!window.confirm(confirmMessage)) return;
+        await onDelete();
+      }}
+    />
   );
 }
 
@@ -833,6 +900,8 @@ export function WavePage({
   onAddCard,
   onRemoveCard,
   onMoveCard,
+  onRenameWave,
+  onDeleteWave,
 }: {
   wave: Wave;
   cove: Cove;
@@ -840,13 +909,43 @@ export function WavePage({
   onAddCard: (waveId: string, type: AddPanelKind) => void;
   onRemoveCard: (waveId: string, idx: number) => void;
   onMoveCard: (waveId: string, from: number, to: number) => void;
+  onRenameWave?: (waveId: string, title: string) => void | Promise<void>;
+  onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
   const pct = Math.round(wave.progress * 100);
   const cards = wave.cards || [];
-  const hasPlan = cards.some((c) => c.type === 'plan');
 
   const [dragSrc, setDragSrc] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
+
+  // Inline rename state. The title sits inside the breadcrumb so we
+  // swap a same-class input in place of the span when editing — no
+  // layout shift, the rest of the header stays put.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(wave.title);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!editingTitle) setDraftTitle(wave.title);
+  }, [editingTitle, wave.title]);
+  const startRename = () => {
+    if (!onRenameWave) return;
+    setDraftTitle(wave.title);
+    setEditingTitle(true);
+    queueMicrotask(() => {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    });
+  };
+  const commitRename = async () => {
+    const trimmed = draftTitle.trim();
+    setEditingTitle(false);
+    if (!trimmed || trimmed === wave.title || !onRenameWave) return;
+    await onRenameWave(wave.id, trimmed);
+  };
+
+  // Show eta pill only when there's text to show.
+  const showEtaPill = !!wave.eta;
+  const showPct = wave.progress > 0 && wave.progress < 1.0;
 
   return (
     <div className="workbench">
@@ -864,21 +963,60 @@ export function WavePage({
             {cove.name}
           </a>
           <span className="wave-sep">·</span>
-          <span className="wave-title">{wave.title}</span>
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              className="wave-title"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitRename();
+                else if (e.key === 'Escape') setEditingTitle(false);
+              }}
+              onBlur={() => void commitRename()}
+              aria-label="Wave title"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                font: 'inherit',
+                padding: 0,
+                margin: 0,
+                minWidth: 120,
+              }}
+            />
+          ) : (
+            <span className="wave-title">{wave.title}</span>
+          )}
         </span>
         <span className="wave-meta">
-          {wave.status === 'running' ? (
+          {wave.status === 'running' && (
             <span className="status-pill running">
               <span className="status-pill-dot live-dot" />
-              {wave.eta}
+              {wave.eta || 'running'}
             </span>
-          ) : (
+          )}
+          {wave.status === 'waiting' && showEtaPill && (
             <span className="status-pill waiting">
               <span className="status-pill-dot warn" />
               {wave.eta}
             </span>
           )}
-          {wave.progress < 1.0 && <span className="wave-percent num">{pct}%</span>}
+          {showPct && <span className="wave-percent num">{pct}%</span>}
+          {onRenameWave && (
+            <IconButton
+              glyph="✎"
+              label={`Rename "${wave.title}"`}
+              onClick={startRename}
+            />
+          )}
+          {onDeleteWave && (
+            <DeleteButton
+              label={`Delete wave "${wave.title}"`}
+              confirmMessage={`Delete wave "${wave.title}"? Its cards (including any terminals) go too. This cannot be undone.`}
+              onDelete={() => onDeleteWave(wave.id)}
+            />
+          )}
         </span>
       </header>
 
@@ -950,7 +1088,7 @@ export function WavePage({
             </div>
           );
         })}
-        <AddPanel onAdd={(type) => onAddCard(wave.id, type)} hasPlan={hasPlan} />
+        <AddPanel onAdd={(type) => onAddCard(wave.id, type)} />
       </main>
     </div>
   );

@@ -163,12 +163,19 @@ export function CalmApp() {
             const w = await k.createWave(coveId, title);
             go({ name: 'wave', id: w.id });
           }}
+          onRenameCove={async (coveId, name) => {
+            try {
+              await k.renameCove(coveId, name);
+            } catch (err) {
+              console.warn('[Calm] cove rename failed:', err);
+            }
+          }}
           onDeleteCove={async (coveId) => {
             try {
               await k.deleteCove(coveId);
-              // The kernel cascades waves+cards; the WS event will purge
-              // sidebar state. Bounce back to Today so we don't render a
-              // stale CovePage for the now-gone cove.
+              // Kernel cascades the cove's waves+cards; the WS event will
+              // purge sidebar state. Bounce back to Today so we don't
+              // render a stale CovePage for the now-gone cove.
               go({ name: 'today' });
             } catch (err) {
               console.warn('[Calm] cove delete failed:', err);
@@ -193,6 +200,23 @@ export function CalmApp() {
           onAddCard={addCard}
           onRemoveCard={removeCard}
           onMoveCard={moveCardTo}
+          onRenameWave={async (waveId, title) => {
+            try {
+              await k.renameWave(waveId, title);
+            } catch (err) {
+              console.warn('[Calm] wave rename failed:', err);
+            }
+          }}
+          onDeleteWave={async (waveId) => {
+            try {
+              await k.deleteWave(waveId);
+              // Cascade: kernel removes the wave's cards. Bounce up to
+              // the parent cove since the WavePage just disappeared.
+              go({ name: 'cove', coveId: cove.id });
+            } catch (err) {
+              console.warn('[Calm] wave delete failed:', err);
+            }
+          }}
         />
       );
     }
