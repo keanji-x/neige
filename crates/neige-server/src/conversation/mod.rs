@@ -247,10 +247,24 @@ impl<'de> Deserialize<'de> for CreateConvRequest {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let raw = CreateConvRequestRaw::deserialize(de)?;
         let mode = mode_from_extras(raw.mode_extra).map_err(serde::de::Error::custom)?;
+        // Empty strings get the same treatment as missing fields — clients
+        // (e.g. Calm's "new terminal" button) can send `{cwd:"", program:""}`
+        // when they have no sensible defaults and want the server to fall
+        // back to $HOME / $SHELL instead of inheriting from another conv.
+        let program = if raw.program.trim().is_empty() {
+            default_program()
+        } else {
+            raw.program
+        };
+        let cwd = if raw.cwd.trim().is_empty() {
+            default_cwd()
+        } else {
+            raw.cwd
+        };
         Ok(CreateConvRequest {
             title: raw.title,
-            program: raw.program,
-            cwd: raw.cwd,
+            program,
+            cwd,
             proxy: raw.proxy,
             use_worktree: raw.use_worktree,
             worktree_name: raw.worktree_name,
@@ -260,10 +274,15 @@ impl<'de> Deserialize<'de> for CreateConvRequest {
 }
 
 fn default_program() -> String {
-    "claude".to_string()
+    std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
 }
 
 fn default_cwd() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return home;
+        }
+    }
     std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
