@@ -114,38 +114,55 @@ async fn create(
         })
         .await?;
 
-    // 4. Compute socket path under the configured data dir + spawn daemon.
+    // 4. Spawn the daemon and stamp the socket path back onto the row.
+    spawn_daemon_for(&s, &term, &program, &cwd, &env).await?;
+    let term = s
+        .repo
+        .terminal_get(&term.id)
+        .await?
+        .ok_or_else(|| CalmError::Internal("terminal vanished after create".into()))?;
+
+    Ok((StatusCode::CREATED, Json(term)))
+}
+
+/// Spawn a `neige-session-daemon` for the given terminal row, wait for its
+/// unix socket to accept connections, and persist the socket path as the
+/// row's `daemon_handle`. Used by `create` and (when a previously-spawned
+/// daemon has died) by the WS handler's auto-revive path.
+pub(crate) async fn spawn_daemon_for(
+    s: &AppState,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+) -> Result<()> {
     let sock = s.daemon.sock_path(&term.id);
     if let Some(parent) = sock.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| CalmError::Internal(format!("mkdir sock parent: {e}")))?;
     }
+    // Stale leftover socket file from a previous daemon — must remove or
+    // bind() refuses.
     if sock.exists() {
         let _ = std::fs::remove_file(&sock);
     }
-
     let sock_str = sock.to_string_lossy().to_string();
 
     let mut cmd = tokio::process::Command::new(&s.daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])
-        .args(["--cwd", &cwd])
+        .args(["--cwd", cwd])
         .arg("--")
-        .args(["/bin/sh", "-c", &program]);
+        .args(["/bin/sh", "-c", program]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-
-    // Extra env from the JSON payload. Only flat string→string is honored;
-    // anything else is ignored quietly to avoid leaking serialization quirks
-    // into the daemon process env.
     if let Some(map) = env.as_object() {
         for (k, v) in map {
-            if let Some(s) = v.as_str() {
-                cmd.env(k, s);
+            if let Some(val) = v.as_str() {
+                cmd.env(k, val);
             }
         }
     }
-
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -156,16 +173,11 @@ async fn create(
         .map_err(|e| CalmError::Internal(format!("spawn neige-session-daemon: {e}")))?;
     let pid = child.id();
     tracing::info!(pid = ?pid, terminal_id = %term.id, "spawned neige-session-daemon");
-
-    // Reap. The daemon outlives this `tokio::Child`; we just don't want a
-    // zombie if it exits early. Detached lifecycle is fine — calm-server is
-    // not the daemon's supervisor.
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
 
-    // 5. Poll the socket until the daemon is accepting connections (or give
-    // up after ~3s).
+    // Poll until the daemon accepts connections (or give up after ~3s).
     let mut ready = false;
     for _ in 0..75 {
         if UnixStream::connect(&sock).await.is_ok() {
@@ -180,18 +192,10 @@ async fn create(
             term.id
         )));
     }
-
-    // 6. Stamp the handle on the row and re-fetch so the response carries it.
     s.repo
         .terminal_set_handle(&term.id, Some(&sock_str))
         .await?;
-    let term = s
-        .repo
-        .terminal_get(&term.id)
-        .await?
-        .ok_or_else(|| CalmError::Internal("terminal vanished after create".into()))?;
-
-    Ok((StatusCode::CREATED, Json(term)))
+    Ok(())
 }
 
 fn default_program() -> String {

@@ -57,6 +57,15 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>(
     'connecting',
   );
+  // Bumping this re-runs the WS effect, which rebuilds the terminal +
+  // reconnects. Cheap manual respawn affordance for the user when the
+  // shell exits or the daemon dies — the kernel auto-revives dead
+  // daemons on attach, so a reconnect is usually enough.
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const restart = () => {
+    setStatus('connecting');
+    setReconnectKey((k) => k + 1);
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -154,12 +163,22 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       }
       term.dispose();
     };
-  }, [terminalId, theme]);
+  }, [terminalId, theme, reconnectKey]);
 
   return (
     <div className="xterm-view">
       <div ref={containerRef} className="xterm-container" />
-      {status !== 'open' && <div className="xterm-status">{status}…</div>}
+      {status === 'connecting' && (
+        <div className="xterm-status">connecting…</div>
+      )}
+      {status === 'closed' && (
+        <div className="xterm-status xterm-status-closed">
+          <span>disconnected</span>
+          <button onClick={restart} className="xterm-restart">
+            Restart
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -813,6 +813,41 @@ button.card-tool:hover {
   text-transform: lowercase;
   pointer-events: none;
 }
+/* Closed state needs to be interactable so the Restart button can be
+   clicked. Drop the pointer-events: none and centre over the canvas. */
+.xterm-status-closed {
+  position: absolute;
+  inset: 0;
+  top: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: auto;
+  background: oklch(99% 0 0 / 0.6);
+  backdrop-filter: blur(2px);
+  text-transform: none;
+  font-size: 13px;
+  letter-spacing: normal;
+}
+[data-theme="dark"] .xterm-status-closed { background: oklch(15% 0 0 / 0.55); }
+.xterm-restart {
+  height: 28px; padding: 0 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.xterm-restart:hover {
+  background: oklch(0% 0 0 / 0.04);
+  border-color: var(--text-3);
+}
+[data-theme="dark"] .xterm-restart:hover { background: oklch(100% 0 0 / 0.05); }
 .term-line { white-space: pre-wrap; word-break: break-word; }
 .term-line.k-cmd  { color: var(--text); font-weight: 600; }
 .term-line.k-out  { color: var(--text-2); }

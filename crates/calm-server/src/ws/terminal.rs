@@ -14,6 +14,7 @@
 //! at the daemon attach layer. Calm-server just shuttles frames.
 
 use crate::error::Result;
+use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -38,10 +39,12 @@ async fn upgrade(
     Path(id): Path<String>,
     State(s): State<AppState>,
 ) -> impl IntoResponse {
-    // Resolve the socket path *before* the upgrade so a missing terminal /
-    // missing daemon_handle returns a proper HTTP error instead of a 101 +
-    // immediate close.
-    let sock = match resolve_sock(&s, &id).await {
+    // Resolve the socket path *before* the upgrade so a missing terminal
+    // returns a proper HTTP error instead of a 101 + immediate close.
+    // If the daemon for an existing row has died (shell exited, OS killed
+    // it, calm-server restart unhooked it, …), respawn here so the client
+    // re-attach feels seamless.
+    let sock = match resolve_live_sock(&s, &id).await {
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
@@ -49,15 +52,47 @@ async fn upgrade(
         .into_response()
 }
 
-async fn resolve_sock(s: &AppState, id: &str) -> Result<PathBuf> {
+/// Resolve the socket path for a terminal row, **revive a dead daemon if
+/// necessary**. The revive path:
+///   1. Read the terminal row from the repo.
+///   2. If `daemon_handle` is set, probe the socket (`UnixStream::connect`).
+///      If it connects, the daemon is alive — return the path.
+///   3. Otherwise re-spawn the daemon with the row's original program /
+///      cwd / env, wait for it to be ready, persist the new handle, and
+///      return that path.
+async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     let term = s
         .repo
         .terminal_get(id)
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
-    let handle = term.daemon_handle.ok_or_else(|| {
+
+    if let Some(handle) = term.daemon_handle.as_ref() {
+        if let Ok(_probe) = UnixStream::connect(handle).await {
+            // Live daemon — fast path.
+            return Ok(PathBuf::from(handle));
+        }
+        tracing::info!(
+            terminal_id = %term.id,
+            sock = %handle,
+            "daemon socket unreachable — respawning"
+        );
+    } else {
+        tracing::info!(terminal_id = %term.id, "terminal has no daemon_handle — spawning");
+    }
+
+    // Cold path: respawn. `spawn_daemon_for` updates `daemon_handle`
+    // when it succeeds, so we re-read to get the canonical path.
+    let env = term.env.clone();
+    spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
+    let refreshed = s
+        .repo
+        .terminal_get(id)
+        .await?
+        .ok_or_else(|| crate::error::CalmError::Internal("terminal vanished after respawn".into()))?;
+    let handle = refreshed.daemon_handle.ok_or_else(|| {
         crate::error::CalmError::Internal(format!(
-            "terminal {id} has no daemon_handle (was it spawned?)"
+            "terminal {id}: daemon_handle still missing after respawn"
         ))
     })?;
     Ok(PathBuf::from(handle))
