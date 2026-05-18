@@ -240,6 +240,57 @@ input, textarea { font: inherit; color: inherit; }
 [data-theme="dark"] .side .cove-nav .pip { box-shadow: 0 0 0 2px oklch(15% 0.008 245); }
 .side .cove-nav .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Right-aligned wave count next to each cove. Tabular nums so the digits
+   don't shift as counts grow; same fade-out treatment as nav-label so it
+   reads as metadata, not a primary affordance. */
+.side .cove-nav .count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+.side .cove-nav:hover .count,
+.side .cove-nav.active .count { color: var(--text-3); }
+
+/* `+ New cove` row — visually mute by default, brightens on hover.
+   Swatch slot holds a `+` glyph instead of a colored chip so it reads as
+   "create" not "broken cove". */
+.side .cove-nav.new { color: var(--text-3); font-weight: 500; }
+.side .cove-nav.new:hover { color: var(--text); background: oklch(0% 0 0 / 0.03); }
+[data-theme="dark"] .side .cove-nav.new:hover { background: oklch(100% 0 0 / 0.04); }
+.side .cove-nav.new .swatch-plus {
+  width: 10px; height: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  color: var(--text-4);
+}
+.side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
+
+/* Inline-edit state — same row geometry as `.cove-nav` but with a text
+   input instead of a label, so opening the form feels like an in-place
+   nudge rather than a popover. */
+.side .cove-nav-edit {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px;
+  width: 100%;
+  border-radius: 6px;
+  background: oklch(0% 0 0 / 0.025);
+}
+[data-theme="dark"] .side .cove-nav-edit { background: oklch(100% 0 0 / 0.04); }
+.side .cove-nav-edit input {
+  flex: 1; min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.side .cove-nav-edit input::placeholder { color: var(--text-4); }
+
 @keyframes live-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.75; }

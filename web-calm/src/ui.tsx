@@ -406,6 +406,7 @@ export function Sidebar({
               {waiting > 0 && <span className="pip">{waiting}</span>}
             </span>
             <span className="lbl">{cove.name}</span>
+            {cw.length > 0 && <span className="count">{cw.length}</span>}
           </button>
         );
       })}
@@ -464,30 +465,18 @@ function NewCoveButton({
 
   if (!open) {
     return (
-      <button className="cove-nav" onClick={openForm} title="New cove">
+      <button className="cove-nav new" onClick={openForm} title="New cove">
         <span className="swatch-wrap">
-          <span
-            className="swatch"
-            style={{
-              background: 'transparent',
-              border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
-            }}
-          />
+          <span className="swatch-plus">+</span>
         </span>
-        <span className="lbl" style={{ color: 'var(--text-2)' }}>+ New cove</span>
+        <span className="lbl">New cove</span>
       </button>
     );
   }
   return (
-    <div className="cove-nav" style={{ paddingTop: 4, paddingBottom: 4 }}>
+    <div className="cove-nav-edit">
       <span className="swatch-wrap">
-        <span
-          className="swatch"
-          style={{
-            background: 'transparent',
-            border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
-          }}
-        />
+        <span className="swatch-plus">+</span>
       </span>
       <input
         ref={inputRef}
@@ -498,16 +487,7 @@ function NewCoveButton({
           else if (e.key === 'Escape') close();
         }}
         onBlur={() => void submit()}
-        placeholder="Cove name"
-        style={{
-          flex: 1,
-          minWidth: 0,
-          font: 'inherit',
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          color: 'var(--text)',
-        }}
+        placeholder="Name…"
       />
     </div>
   );

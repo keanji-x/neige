@@ -42,6 +42,10 @@ export interface KernelActions {
   createTerminalCard: (waveId: string) => Promise<KernelCard>;
   /** Generic non-terminal card (currently unused; plugin cards land in M3). */
   createCard: (waveId: string, kind: string, payload?: unknown) => Promise<KernelCard>;
+  /** Cascading delete — kernel removes the cove's waves and cards too. */
+  deleteCove: (coveId: string) => Promise<void>;
+  /** Cascading delete — kernel removes the wave's cards too. */
+  deleteWave: (waveId: string) => Promise<void>;
   deleteCard: (cardId: string) => Promise<void>;
   /** Reorder via `sort` patch; caller supplies the new sort value. */
   setCardSort: (cardId: string, sort: number) => Promise<KernelCard>;
@@ -253,6 +257,16 @@ export function useKernel(): KernelState & KernelActions {
     await api.deleteCard(cardId);
   }, []);
 
+  const deleteCove = useCallback(async (coveId: string) => {
+    await api.deleteCove(coveId);
+    // The WS `cove.deleted` event drives the local-state purge so we
+    // don't double-update here.
+  }, []);
+
+  const deleteWave = useCallback(async (waveId: string) => {
+    await api.deleteWave(waveId);
+  }, []);
+
   const setCardSort = useCallback(
     async (cardId: string, sort: number) => api.updateCard(cardId, { sort }),
     [],
@@ -271,6 +285,8 @@ export function useKernel(): KernelState & KernelActions {
     createWave,
     createCard,
     createTerminalCard,
+    deleteCove,
+    deleteWave,
     deleteCard,
     setCardSort,
   };

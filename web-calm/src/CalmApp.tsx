@@ -163,6 +163,17 @@ export function CalmApp() {
             const w = await k.createWave(coveId, title);
             go({ name: 'wave', id: w.id });
           }}
+          onDeleteCove={async (coveId) => {
+            try {
+              await k.deleteCove(coveId);
+              // The kernel cascades waves+cards; the WS event will purge
+              // sidebar state. Bounce back to Today so we don't render a
+              // stale CovePage for the now-gone cove.
+              go({ name: 'today' });
+            } catch (err) {
+              console.warn('[Calm] cove delete failed:', err);
+            }
+          }}
         />
       );
     }

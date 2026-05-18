@@ -528,6 +528,7 @@ export function CovePage({
   waves,
   onGo,
   onCreateWave,
+  onDeleteCove,
 }: {
   cove: Cove;
   waves: Wave[];
@@ -535,6 +536,9 @@ export function CovePage({
   /** Called when the user submits the inline `+ New wave` compose bar.
    *  Optional so CovePage degrades gracefully if a host doesn't wire it. */
   onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
+  /** Called from the kebab menu's "Delete cove" item. Confirmation is the
+   *  caller's responsibility (so we don't double-prompt). */
+  onDeleteCove?: (coveId: string) => void | Promise<void>;
 }) {
   const running = waves.filter((w) => w.status === 'running');
   const waiting = waves.filter((w) => w.status === 'waiting');
@@ -569,7 +573,10 @@ export function CovePage({
         />
         {eyebrow}
       </div>
-      <h1 className="h-display">{cove.name}.</h1>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12 }}>
+        <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{cove.name}.</h1>
+        {onDeleteCove && <CoveActionsMenu coveName={cove.name} onDelete={() => onDeleteCove(cove.id)} />}
+      </div>
 
       {waves.length === 0 && (
         <div
@@ -626,6 +633,106 @@ export function CovePage({
         <NewWaveCTA
           onSubmit={(title) => onCreateWave(cove.id, title)}
         />
+      )}
+    </div>
+  );
+}
+
+// ---------------- CoveActionsMenu — kebab in the cove header ----------------
+//
+// Single-option for now (Delete cove) but built as a menu so renaming /
+// recolor land in the same place later.
+
+function CoveActionsMenu({
+  coveName,
+  onDelete,
+}: {
+  coveName: string;
+  onDelete: () => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // Close on outside click so the menu can't get stuck.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  const askDelete = async () => {
+    setOpen(false);
+    const sure = window.confirm(
+      `Delete cove "${coveName}"? Its waves and cards will be deleted too. This cannot be undone.`,
+    );
+    if (!sure) return;
+    await onDelete();
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Cove actions"
+        aria-label="Cove actions"
+        aria-expanded={open}
+        style={{
+          width: 28, height: 28,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'transparent',
+          border: 'none',
+          borderRadius: 6,
+          color: 'var(--text-3)',
+          font: 'inherit',
+          fontSize: 18,
+          lineHeight: 1,
+          cursor: 'pointer',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'oklch(0% 0 0 / 0.04)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            right: 0,
+            minWidth: 160,
+            padding: 4,
+            background: 'var(--paper)',
+            border: '1px solid var(--hairline)',
+            borderRadius: 8,
+            boxShadow: '0 4px 16px oklch(0% 0 0 / 0.08)',
+            zIndex: 10,
+          }}
+        >
+          <button
+            role="menuitem"
+            onClick={askDelete}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              padding: '8px 12px',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+              font: 'inherit',
+              fontSize: 13,
+              color: 'var(--warn, #c00)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--warn-soft, oklch(96% 0.03 30))'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            Delete cove
+          </button>
+        </div>
       )}
     </div>
   );
