@@ -6,6 +6,8 @@ web/node_modules
 web/dist
 web-mobile/node_modules
 web-mobile/dist
+web-calm/node_modules
+web-calm/dist
 packages/*/node_modules
 runners/*/node_modules
 runners/*/dist
