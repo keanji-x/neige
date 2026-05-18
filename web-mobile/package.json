@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "prelink:shared": "node -e \"try { require('fs').symlinkSync('../../web-mobile/node_modules', '../packages/neige-web-shared/node_modules', 'dir'); } catch (e) { if (e.code !== 'EEXIST') throw e; }\"",
+    "prelink:shared": "node -e \"const fs=require('fs');const p='../packages/neige-web-shared/node_modules';try{fs.unlinkSync(p)}catch(e){if(e.code!=='ENOENT')throw e}fs.symlinkSync('../../web-mobile/node_modules',p,'dir')\"",
     "dev": "npm run prelink:shared && vite",
     "build": "npm run prelink:shared && tsc -b && vite build",
     "lint": "eslint .",
