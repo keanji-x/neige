@@ -3,7 +3,7 @@
 //! After each successful mutation, emit the matching `Event` via
 //! `state.events.emit(...)` so the WS bus can fan out.
 
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::event::Event;
 use crate::model::{Cove, CovePatch, NewCove};
 use crate::state::AppState;
@@ -24,16 +24,17 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list(State(s): State<AppState>) -> Result<Json<Vec<Cove>>> {
-    let _ = s;
-    todo!("track B: s.repo.coves_list()")
+    let coves = s.repo.coves_list().await?;
+    Ok(Json(coves))
 }
 
 async fn create(
     State(s): State<AppState>,
     Json(p): Json<NewCove>,
 ) -> Result<(StatusCode, Json<Cove>)> {
-    let _ = (s, p);
-    todo!("track B: create + emit Event::CoveUpdated, return (201, cove)")
+    let cove = s.repo.cove_create(p).await?;
+    s.events.emit(Event::CoveUpdated(cove.clone()));
+    Ok((StatusCode::CREATED, Json(cove)))
 }
 
 async fn update(
@@ -41,16 +42,13 @@ async fn update(
     Path(id): Path<String>,
     Json(p): Json<CovePatch>,
 ) -> Result<Json<Cove>> {
-    let _ = (s, id, p);
-    todo!("track B: update + emit Event::CoveUpdated")
+    let cove = s.repo.cove_update(&id, p).await?;
+    s.events.emit(Event::CoveUpdated(cove.clone()));
+    Ok(Json(cove))
 }
 
 async fn delete_(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
-    let _ = (s, id);
-    todo!("track B: delete + emit Event::CoveDeleted, return 204")
-}
-
-#[allow(dead_code)]
-fn _suppress() -> CalmError {
-    CalmError::Internal(format!("{:?}", Event::CoveDeleted { id: String::new() }))
+    s.repo.cove_delete(&id).await?;
+    s.events.emit(Event::CoveDeleted { id });
+    Ok(StatusCode::NO_CONTENT)
 }
