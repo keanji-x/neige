@@ -5,14 +5,18 @@ import type { ITheme, ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 /**
- * Shared WS framing contract (see crates/neige-server/src/api/mod.rs handle_ws):
+ * Shared WS framing contract (see crates/neige-server/src/api/ws.rs handle_ws):
  *   Client → server text JSON:
- *     {"type":"attach","last_seq":<number|null>}   // first frame
+ *     {"type":"attach","last_seq":<number|null>,
+ *      "attach_id":<uuid|null>}                    // first frame
  *     {"type":"resize","cols":C,"rows":R}
- *   Client → server binary: raw stdin.
+ *   Client → server binary: raw stdin (UTF-8 encoded keystrokes or paste).
  *   Server → client binary: [u64 BE seq][payload]. seq=0 = "reset+write".
- *   Server → client text JSON: {"type":"hello","last_seq":N} after initial
- *     prime, so the client knows its new baseline.
+ *   Server → client text JSON:
+ *     {"type":"hello","last_seq":N,"attach_id":"<uuid>"} after initial
+ *     prime, so the client knows its new baseline AND the epoch identifier
+ *     to echo back on the next reconnect (so the server can detect a stale
+ *     seq from a previous SessionClient instance and force a Snapshot).
  */
 function readU64BE(bytes: Uint8Array, offset: number): bigint {
   const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
@@ -84,6 +88,7 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const lastSeqRef = useRef<bigint | null>(null);
+  const attachIdRef = useRef<string | null>(null);
   const scheduleFitRef = useRef<() => void>(() => {});
 
   // Keep callbacks fresh across renders without retriggering the whole
@@ -191,6 +196,13 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
 
     // Batch incoming PTY output per animation frame to avoid cursor jitter
     // during TUI redraws (e.g. Claude Code SIGWINCH).
+    //
+    // Important: `lastSeqRef` is updated on RECEIPT, not on flush. Browsers
+    // throttle rAF to ~1Hz for hidden tabs, so a hidden tab accumulates
+    // chunks in writeBuf for seconds while still receiving them. If WS
+    // reconnects during that window and we used the last-flushed seq, the
+    // server would Delta-replay everything we already have, causing visible
+    // duplicate writes (and a TUI cursor-positioning mess).
     let writeBuf: { seq: bigint; bytes: Uint8Array; reset: boolean }[] = [];
     let rafId = 0;
 
@@ -201,7 +213,6 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
       for (const c of chunks) {
         if (c.reset) term.reset();
         term.write(c.bytes);
-        if (!c.reset && c.seq > 0n) lastSeqRef.current = c.seq;
       }
     };
 
@@ -210,8 +221,13 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
         if (typeof e.data === 'string') {
           try {
             const msg = JSON.parse(e.data);
-            if (msg && msg.type === 'hello' && typeof msg.last_seq === 'number') {
-              lastSeqRef.current = BigInt(msg.last_seq);
+            if (msg && msg.type === 'hello') {
+              if (typeof msg.last_seq === 'number') {
+                lastSeqRef.current = BigInt(msg.last_seq);
+              }
+              if (typeof msg.attach_id === 'string') {
+                attachIdRef.current = msg.attach_id;
+              }
             }
           } catch {
             // ignore bad JSON
@@ -222,7 +238,22 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
         const buf = new Uint8Array(e.data);
         const seq = readU64BE(buf, 0);
         const payload = buf.subarray(8);
-        writeBuf.push({ seq, bytes: payload, reset: seq === 0n });
+        if (seq === 0n) {
+          // Reset invalidates any chunks we received but haven't rendered
+          // yet — if we kept them, they'd be written briefly before the
+          // reset clears them, causing a visible flicker of stale content.
+          writeBuf = [{ seq, bytes: payload, reset: true }];
+          // The snapshot frame itself carries no seq number; hello will
+          // tell us the real baseline. Until that arrives, our previous
+          // lastSeq is meaningless against the new history — if WS dies
+          // between snapshot and hello, the next reconnect would Delta-
+          // replay chunks already covered by the snapshot. Null forces
+          // the safe re-snapshot path.
+          lastSeqRef.current = null;
+        } else {
+          writeBuf.push({ seq, bytes: payload, reset: false });
+          lastSeqRef.current = seq;
+        }
         trackOutput(payload.byteLength);
         if (!rafId) rafId = requestAnimationFrame(flush);
       };
@@ -235,12 +266,18 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
         reconnectAttempts = 0;
         onStatusChangeRef.current?.('open');
         // Attach handshake — tells the server which chunks we already have
-        // so it can delta-replay instead of dumping full history.
+        // (`last_seq`) and which SessionClient epoch they came from
+        // (`attach_id`). If the server's current SessionClient is a different
+        // instance (e.g. neige-server restarted while we held the daemon
+        // alive), the epoch mismatches and the server discards last_seq to
+        // force a Snapshot — without that we'd silently keep rendering on
+        // top of a fresh seq=1 history.
         const ls = lastSeqRef.current;
         ws.send(
           JSON.stringify({
             type: 'attach',
             last_seq: ls === null ? null : Number(ls),
+            attach_id: attachIdRef.current,
           }),
         );
         // Push dimensions so the PTY matches what we render.
@@ -288,10 +325,17 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
 
     connect();
 
-    // Forward keyboard input to the PTY.
+    // Forward keyboard input to the PTY as binary frames. Sending as text
+    // worked by accident — the server used to fall back to "any unparseable
+    // text frame is stdin", which meant a typo'd control message ended up in
+    // the PTY and pasted JSON could be misread as control. Binary frames are
+    // unambiguous: text = JSON control, binary = stdin.
+    const stdinEncoder = new TextEncoder();
     const dataDisposable = term.onData((data) => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(stdinEncoder.encode(data));
+      }
     });
 
     window.addEventListener('resize', scheduleFit);
@@ -343,10 +387,17 @@ export function useTerminalCore(opts: UseTerminalCoreOptions): UseTerminalCoreAp
   const sendData = useCallback((s: string | Uint8Array) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // WebSocket.send accepts string | Blob | BufferSource; the Uint8Array
-    // branch needs an explicit cast because TS widens to ArrayBufferLike.
-    if (typeof s === 'string') ws.send(s);
-    else ws.send(s as unknown as ArrayBuffer);
+    // Always send as binary — text frames are reserved for JSON control.
+    // Strings (e.g. control codes like '\x01' from macOS Cmd+Arrow shortcuts)
+    // get UTF-8 encoded here so callers don't each have to maintain their
+    // own TextEncoder.
+    if (typeof s === 'string') {
+      ws.send(new TextEncoder().encode(s));
+    } else {
+      // WebSocket.send accepts BufferSource; cast needed because TS widens
+      // to ArrayBufferLike.
+      ws.send(s as unknown as ArrayBuffer);
+    }
   }, []);
 
   const sendResize = useCallback((cols: number, rows: number) => {

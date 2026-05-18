@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     extract::{
         Path, State, WebSocketUpgrade,
@@ -17,6 +19,12 @@ use super::AppState;
 use crate::attach::AttachResult;
 use crate::conversation::SharedManager;
 
+/// Server-initiated WS ping cadence. Browsers auto-reply with Pong (we don't
+/// see it in JS), and the send itself fails fast if TCP is broken — catches
+/// idle-timeout closures from intermediaries (mobile NAT, proxies) and
+/// half-open connections without needing kernel TCP keepalive.
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+
 /// WS-facing control messages the browser client sends as JSON text frames.
 /// This is a distinct type from `neige_session::ClientMsg`, which is the
 /// daemon-facing protocol.
@@ -25,9 +33,16 @@ use crate::conversation::SharedManager;
 enum WsClientMsg {
     /// Sent as the first frame after the WebSocket opens. `last_seq` is the
     /// highest chunk seq the client still has in its xterm buffer; null for a
-    /// fresh attach. Server responds with Delta / Snapshot / hello depending
-    /// on how far behind the client is.
-    Attach { last_seq: Option<u64> },
+    /// fresh attach. `attach_id` is what the client received from a previous
+    /// `hello.attach_id` (null for a never-attached client). If it doesn't
+    /// match the current SessionClient's id, the seq numbering belongs to a
+    /// different epoch and we discard `last_seq` to force a Snapshot.
+    /// Server responds with Delta / Snapshot / hello depending on how far
+    /// behind the client is.
+    Attach {
+        last_seq: Option<u64>,
+        attach_id: Option<Uuid>,
+    },
     /// PTY dimensions, delivered as a first-class control message.
     Resize { cols: u16, rows: u16 },
 }
@@ -97,10 +112,17 @@ async fn handle_ws(
     // frame first; anything else is treated as a protocol error and the
     // connection closes.
     let mut last_seq: Option<u64> = None;
+    let mut claimed_attach_id: Option<Uuid> = None;
 
     match ws_rx.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<WsClientMsg>(&text) {
-            Ok(WsClientMsg::Attach { last_seq: ls }) => last_seq = ls,
+            Ok(WsClientMsg::Attach {
+                last_seq: ls,
+                attach_id,
+            }) => {
+                last_seq = ls;
+                claimed_attach_id = attach_id;
+            }
             Ok(WsClientMsg::Resize { cols, rows }) => {
                 apply_resize(&mgr, &id, cols, rows).await;
             }
@@ -110,7 +132,7 @@ async fn handle_ws(
     }
 
     // Pull the attach payload + live receiver atomically.
-    let (mut rx, attach_result) = {
+    let (mut rx, attach_result, attach_id) = {
         let mgr_lock = mgr.lock().await;
         let Some(conv) = mgr_lock.get(&id) else {
             return;
@@ -118,7 +140,8 @@ async fn handle_ws(
         let Some(client) = conv.client.as_ref() else {
             return;
         };
-        client.attach(last_seq)
+        let (rx, result) = client.attach(last_seq, claimed_attach_id);
+        (rx, result, client.attach_id())
     };
 
     // Prime the client.
@@ -149,8 +172,13 @@ async fn handle_ws(
         }
     };
 
-    // Hello tells the client what seq to treat as its new baseline.
-    let hello = serde_json::json!({ "type": "hello", "last_seq": baseline_seq });
+    // Hello tells the client what seq to treat as its new baseline, and what
+    // epoch identifier to echo back on its next reconnect.
+    let hello = serde_json::json!({
+        "type": "hello",
+        "last_seq": baseline_seq,
+        "attach_id": attach_id.to_string(),
+    });
     if ws_tx
         .send(Message::Text(hello.to_string().into()))
         .await
@@ -159,25 +187,40 @@ async fn handle_ws(
         return;
     }
 
-    // Live forwarding task — writes every new (seq, bytes) tuple as a framed
-    // binary frame.
+    // Live forwarding task. Multiplexes between the broadcast (live PTY
+    // output) and a periodic Ping (heartbeat for half-open detection).
     let send_task = tokio::spawn(async move {
+        // First fire is at +WS_PING_INTERVAL, not immediately. Using
+        // `interval_at` rather than `interval().tick().await` to drop the
+        // first tick — explicit so a later refactor doesn't accidentally
+        // resurrect the immediate Ping by changing the construction.
+        let mut ping = tokio::time::interval_at(
+            tokio::time::Instant::now() + WS_PING_INTERVAL,
+            WS_PING_INTERVAL,
+        );
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match rx.recv().await {
-                Ok((seq, data)) => {
-                    if ws_tx
-                        .send(Message::Binary(frame(seq, &data).into()))
-                        .await
-                        .is_err()
-                    {
+            tokio::select! {
+                res = rx.recv() => match res {
+                    Ok((seq, data)) => {
+                        if ws_tx
+                            .send(Message::Binary(frame(seq, &data).into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::warn!("broadcast lagged, skipped {n} messages");
+                    }
+                    Err(RecvError::Closed) => break,
+                },
+                _ = ping.tick() => {
+                    if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
                         break;
                     }
                 }
-                Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("broadcast lagged, skipped {n} messages");
-                    continue;
-                }
-                Err(RecvError::Closed) => break,
             }
         }
     });
@@ -193,8 +236,11 @@ async fn handle_ws(
 }
 
 /// One-shot dispatch for an inbound WebSocket message after the attach
-/// handshake. JSON control frames (resize) are dispatched to the daemon via
-/// `apply_resize`; binary frames are forwarded as `ClientMsg::Stdin`.
+/// handshake. Text frames are JSON control messages (resize / re-attach);
+/// binary frames are stdin. Unparseable text is logged and dropped — the
+/// previous "treat unknown text as stdin" fallback made any typo'd control
+/// frame silently end up in the PTY, and any keystroke happening to start
+/// with `{"` would be misinterpreted as a control frame.
 async fn process_inbound(
     msg: Message,
     mgr: &SharedManager,
@@ -202,23 +248,16 @@ async fn process_inbound(
     sender: &UnboundedSender<ClientMsg>,
 ) {
     match msg {
-        Message::Text(text) => {
-            match serde_json::from_str::<WsClientMsg>(&text) {
-                Ok(WsClientMsg::Resize { cols, rows }) => {
-                    apply_resize(mgr, id, cols, rows).await;
-                }
-                // A second Attach frame is a no-op; client shouldn't send one.
-                Ok(WsClientMsg::Attach { .. }) => {}
-                // Anything else is a keystroke. xterm.js's `term.onData`
-                // hands us a string and the frontend forwards it via
-                // `ws.send(string)` which the WebSocket spec encodes as a
-                // Text frame. Without this fallback the typing path is dead.
-                // (Lost in 77f504c when api/mod.rs was split; restored here.)
-                Err(_) => {
-                    let _ = sender.send(ClientMsg::Stdin(text.as_bytes().to_vec()));
-                }
+        Message::Text(text) => match serde_json::from_str::<WsClientMsg>(&text) {
+            Ok(WsClientMsg::Resize { cols, rows }) => {
+                apply_resize(mgr, id, cols, rows).await;
             }
-        }
+            // A second Attach frame is a no-op; client shouldn't send one.
+            Ok(WsClientMsg::Attach { .. }) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "unparseable WS text frame; dropping");
+            }
+        },
         Message::Binary(data) => {
             let _ = sender.send(ClientMsg::Stdin(data.to_vec()));
         }
