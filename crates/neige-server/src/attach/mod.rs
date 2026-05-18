@@ -109,6 +109,20 @@ pub struct SessionClient {
     /// Send happens under the history lock so `attach()` sees a coherent view.
     pub tx: broadcast::Sender<(u64, Vec<u8>)>,
     history: Arc<Mutex<History>>,
+    /// Identifies THIS attach to the daemon. Browsers cache the value from
+    /// `hello.attach_id` and echo it back on reconnect; if a new SessionClient
+    /// instance (after neige-server restart / daemon resume) generates a
+    /// different id, `attach()` ignores any claimed `last_seq` and forces a
+    /// Snapshot rather than letting the client silently desync against a
+    /// fresh seq=1 history.
+    ///
+    /// INVARIANT: `attach_id` is bound 1:1 to `history` for the lifetime of
+    /// this `SessionClient`. Both are constructed exclusively in `connect()`
+    /// and never reset. If a future change ever reuses a `SessionClient`
+    /// across daemon sockets (e.g. silently reattaching), it MUST also
+    /// generate a fresh `attach_id` and clear `history`, otherwise the
+    /// epoch check below is meaningless.
+    attach_id: Uuid,
     /// Flipped to false by the reader task when the daemon socket closes
     /// (child exit / daemon crash).
     alive: Arc<std::sync::atomic::AtomicBool>,
@@ -205,9 +219,14 @@ impl SessionClient {
             ctrl_tx,
             tx,
             history,
+            attach_id: Uuid::new_v4(),
             alive,
             sock_path,
         })
+    }
+
+    pub fn attach_id(&self) -> Uuid {
+        self.attach_id
     }
 
     /// Clone of the control-channel sender. Callers push `ClientMsg::Stdin`
@@ -232,16 +251,30 @@ impl SessionClient {
     /// the snapshot and the subscribe blocks the socket reader — any chunk
     /// it appends after we release will carry a strictly-greater seq and
     /// be delivered to the returned receiver without loss.
+    ///
+    /// `claimed_attach_id` is what the client echoed back from a previous
+    /// `hello.attach_id`. If it doesn't match this SessionClient's id, the
+    /// client's `last_seq` belongs to a different epoch (this instance was
+    /// recreated after a server restart, etc.) and is meaningless against
+    /// the current history — fall through to Snapshot.
     pub fn attach(
         &self,
         last_seq: Option<u64>,
+        claimed_attach_id: Option<Uuid>,
     ) -> (broadcast::Receiver<(u64, Vec<u8>)>, AttachResult) {
         let history = self.history.lock().expect("history poisoned");
         let rx = self.tx.subscribe();
         let latest = history.latest_seq();
         let earliest = history.earliest_seq();
 
-        let result = match (last_seq, earliest) {
+        let effective_last_seq = match claimed_attach_id {
+            Some(claim) if claim == self.attach_id => last_seq,
+            // Either a fresh client (no claim) or a stale-epoch client.
+            // Either way, can't trust last_seq against our current history.
+            _ => None,
+        };
+
+        let result = match (effective_last_seq, earliest) {
             (Some(ls), _) if ls >= latest => AttachResult::UpToDate { latest_seq: latest },
             (Some(ls), Some(earliest_seq)) if ls >= earliest_seq.saturating_sub(1) => {
                 AttachResult::Delta {

@@ -44,7 +44,7 @@ export function useTerminal(containerId: string | null) {
   const sessionIdRef = useRef<string | null>(containerId);
   sessionIdRef.current = containerId;
 
-  const { termRef, wsRef, fitRef } = useTerminalCore({
+  const { termRef, wsRef, fitRef, sendData } = useTerminalCore({
     containerRef,
     sessionId: containerId,
     theme,
@@ -58,24 +58,24 @@ export function useTerminal(containerId: string | null) {
     onTerminalReady: (term) => {
       // Cmd+Left/Right → line start/end, Cmd+Backspace → kill line. The
       // browser swallows these by default (history nav), so intercept and
-      // forward the equivalent control codes to the PTY.
+      // forward the equivalent control codes to the PTY. Goes through
+      // sendData (binary frame), not raw ws.send(string) — the latter would
+      // be dropped by the server as an unrecognized text control frame.
       term.attachCustomKeyEventHandler((e) => {
         if (e.type !== 'keydown') return true;
         if (!e.metaKey || e.ctrlKey || e.altKey) return true;
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return true;
         if (e.key === 'ArrowLeft') {
-          ws.send('\x01');
+          sendData('\x01');
           e.preventDefault();
           return false;
         }
         if (e.key === 'ArrowRight') {
-          ws.send('\x05');
+          sendData('\x05');
           e.preventDefault();
           return false;
         }
         if (e.key === 'Backspace') {
-          ws.send('\x15');
+          sendData('\x15');
           e.preventDefault();
           return false;
         }
