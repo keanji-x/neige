@@ -181,6 +181,15 @@ export function CalmApp() {
               console.warn('[Calm] cove delete failed:', err);
             }
           }}
+          onDeleteWave={async (waveId) => {
+            try {
+              await k.deleteWave(waveId);
+              // We stay on the CovePage — the WS `wave.deleted` event
+              // will remove the row from the list.
+            } catch (err) {
+              console.warn('[Calm] wave delete failed:', err);
+            }
+          }}
         />
       );
     }

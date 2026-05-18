@@ -530,6 +530,7 @@ export function CovePage({
   onCreateWave,
   onRenameCove,
   onDeleteCove,
+  onDeleteWave,
 }: {
   cove: Cove;
   waves: Wave[];
@@ -541,7 +542,17 @@ export function CovePage({
   /** Called from the × button on the header. CovePage shows its own
    *  `window.confirm`, so callers don't need to double-prompt. */
   onDeleteCove?: (coveId: string) => void | Promise<void>;
+  /** Called from a per-row × on hover. Same confirm-then-delete pattern. */
+  onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
+  const deleteWaveWithConfirm = (w: Wave) => {
+    if (!onDeleteWave) return;
+    const sure = window.confirm(
+      `Delete wave "${w.title}"? Its cards (including any terminals) go too. This cannot be undone.`,
+    );
+    if (!sure) return;
+    void onDeleteWave(w.id);
+  };
   const running = waves.filter((w) => w.status === 'running');
   const waiting = waves.filter((w) => w.status === 'waiting');
   const idle    = waves.filter((w) => w.status === 'idle');
@@ -614,6 +625,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
             />
           ))}
         </Section>
@@ -627,6 +639,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
             />
           ))}
         </Section>
@@ -640,6 +653,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
             />
           ))}
         </Section>
@@ -774,11 +788,17 @@ function EditableTitle({
       />
     );
   }
+  // Click-to-edit: no pencil affordance — the title itself is the
+  // affordance. `cursor: text` is the hint; click → enter edit mode.
   return (
-    <>
-      <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{value}.</h1>
-      <IconButton glyph="✎" label={`Rename "${value}"`} onClick={enter} />
-    </>
+    <h1
+      className="h-display"
+      style={{ flex: 1, margin: 0, cursor: 'text' }}
+      onClick={enter}
+      title="Click to rename"
+    >
+      {value}.
+    </h1>
   );
 }
 
@@ -986,7 +1006,14 @@ export function WavePage({
               }}
             />
           ) : (
-            <span className="wave-title">{wave.title}</span>
+            <span
+              className="wave-title"
+              onClick={onRenameWave ? startRename : undefined}
+              style={onRenameWave ? { cursor: 'text' } : undefined}
+              title={onRenameWave ? 'Click to rename' : undefined}
+            >
+              {wave.title}
+            </span>
           )}
         </span>
         <span className="wave-meta">
@@ -1003,13 +1030,6 @@ export function WavePage({
             </span>
           )}
           {showPct && <span className="wave-percent num">{pct}%</span>}
-          {onRenameWave && (
-            <IconButton
-              glyph="✎"
-              label={`Rename "${wave.title}"`}
-              onClick={startRename}
-            />
-          )}
           {onDeleteWave && (
             <DeleteButton
               label={`Delete wave "${wave.title}"`}

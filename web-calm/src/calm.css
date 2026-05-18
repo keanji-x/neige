@@ -483,6 +483,35 @@ input, textarea { font: inherit; color: inherit; }
   text-align: right;
 }
 
+/* Per-row delete affordance — hidden until the row is hovered or
+   keyboard-focused. Sits absolutely so it doesn't push the existing
+   eta/progress cluster around when it appears. */
+.wave-row { position: relative; }
+.wave-row .wave-row-delete {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.wave-row:hover .wave-row-delete,
+.wave-row:focus-within .wave-row-delete { opacity: 1; }
+.wave-row .wave-row-delete:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
 /* fill bar */
 .fill {
   position: relative;
