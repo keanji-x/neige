@@ -17,17 +17,51 @@ pub enum Status {
 }
 
 /// How a conversation talks to its daemon. Terminal mode is the existing
-/// PTY/xterm.js path; Chat mode runs the program headless under stream-json.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+/// PTY/xterm.js path; Chat mode runs the program headless under stream-json
+/// and carries a server-globally-unique `name` that AI/MCP tools use to
+/// address it (replacing the UUID at the AI-facing tool surface).
+///
+/// Internally tagged on `mode`: serializes as `{"mode":"terminal"}` for
+/// terminal sessions and `{"mode":"chat","name":"..."}` for chat sessions.
+/// Combined with `#[serde(flatten)]` on the carrying struct, this keeps the
+/// JSON shape flat (sibling fields rather than nested), which means old
+/// terminal session files written before chat existed still parse — and
+/// the type system prevents constructing a chat session without a name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "mode", rename_all = "lowercase")]
 pub enum SessionMode {
     #[default]
     Terminal,
-    Chat,
+    Chat {
+        /// Stable, server-globally-unique handle used by AI/MCP tools to
+        /// address this session (instead of UUID). Picked at create time;
+        /// can be changed later via the rename API. Empty strings are
+        /// rejected at construction.
+        name: String,
+    },
+}
+
+impl SessionMode {
+    /// Convenience: returns the chat name if this is a chat session.
+    pub fn chat_name(&self) -> Option<&str> {
+        match self {
+            SessionMode::Terminal => None,
+            SessionMode::Chat { name } => Some(name),
+        }
+    }
 }
 
 /// Persisted session metadata stored in .neige/sessions/<id>.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Manual `Deserialize` (not derived) because `#[serde(flatten, default)]`
+/// cannot fall back to the unit variant when the internally-tagged enum's
+/// discriminator field is absent — it errors on the missing tag. Pre-mode
+/// session files (and pre-chat REST clients) must still load as Terminal,
+/// so we route deserialization through `SessionMetaRaw` which captures the
+/// mode-related fields into a generic map and inspects them for a `"mode"`
+/// key before deciding whether to delegate to `SessionMode::deserialize`
+/// or default to Terminal.
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionMeta {
     pub id: Uuid,
     pub title: String,
@@ -38,10 +72,56 @@ pub struct SessionMeta {
     pub worktree_branch: Option<String>,
     pub created_at: String,
     pub last_active: String,
-    /// Defaults to Terminal so old session files (which lack this field)
-    /// load as the original PTY mode.
-    #[serde(default)]
+    #[serde(flatten)]
     pub mode: SessionMode,
+}
+
+#[derive(Deserialize)]
+struct SessionMetaRaw {
+    id: Uuid,
+    title: String,
+    program: String,
+    cwd: String,
+    proxy: Option<String>,
+    use_worktree: bool,
+    worktree_branch: Option<String>,
+    created_at: String,
+    last_active: String,
+    #[serde(flatten)]
+    mode_extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for SessionMeta {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = SessionMetaRaw::deserialize(de)?;
+        let mode = mode_from_extras(raw.mode_extra).map_err(serde::de::Error::custom)?;
+        Ok(SessionMeta {
+            id: raw.id,
+            title: raw.title,
+            program: raw.program,
+            cwd: raw.cwd,
+            proxy: raw.proxy,
+            use_worktree: raw.use_worktree,
+            worktree_branch: raw.worktree_branch,
+            created_at: raw.created_at,
+            last_active: raw.last_active,
+            mode,
+        })
+    }
+}
+
+/// Decide a `SessionMode` from the leftover fields captured by `flatten`.
+/// Empty map (or one with no `mode` key) → Terminal, matching pre-mode
+/// session-file shape. Otherwise delegate to `SessionMode::deserialize`,
+/// which enforces the chat variant's `name` field.
+fn mode_from_extras(
+    extras: serde_json::Map<String, serde_json::Value>,
+) -> Result<SessionMode, String> {
+    if !extras.contains_key("mode") {
+        return Ok(SessionMode::Terminal);
+    }
+    SessionMode::deserialize(serde_json::Value::Object(extras))
+        .map_err(|e| format!("invalid mode/name fields: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +136,7 @@ pub struct ConvInfo {
     pub created_at: String,
     pub use_worktree: bool,
     pub worktree_branch: Option<String>,
+    #[serde(flatten)]
     pub mode: SessionMode,
 }
 
@@ -78,13 +159,13 @@ pub struct Conversation {
 
 impl Conversation {
     pub fn info(&self) -> ConvInfo {
-        let status = match self.mode {
+        let status = match &self.mode {
             SessionMode::Terminal => match &self.client {
                 Some(c) if c.is_alive() => Status::Running,
                 Some(_) => Status::Dead,
                 None => Status::Detached,
             },
-            SessionMode::Chat => match &self.chat_client {
+            SessionMode::Chat { .. } => match &self.chat_client {
                 Some(c) if c.is_alive() => Status::Running,
                 Some(_) => Status::Dead,
                 None => Status::Detached,
@@ -105,7 +186,7 @@ impl Conversation {
             created_at: self.created_at.to_rfc3339(),
             use_worktree: self.use_worktree,
             worktree_branch: self.worktree_branch.clone(),
-            mode: self.mode,
+            mode: self.mode.clone(),
         }
     }
 
@@ -120,12 +201,17 @@ impl Conversation {
             worktree_branch: self.worktree_branch.clone(),
             created_at: self.created_at.to_rfc3339(),
             last_active: chrono::Utc::now().to_rfc3339(),
-            mode: self.mode,
+            mode: self.mode.clone(),
         }
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// Body of `POST /api/conversations`. Same manual-`Deserialize` story as
+/// `SessionMeta`: terminal-mode REST clients omit `mode` entirely and
+/// expect Terminal; chat-mode clients send `mode: "chat"` with a sibling
+/// `name`. Internally-tagged + flatten cannot model "missing tag → unit
+/// variant default" through derive alone.
+#[derive(Clone, Serialize)]
 pub struct CreateConvRequest {
     pub title: String,
     #[serde(default = "default_program")]
@@ -137,10 +223,40 @@ pub struct CreateConvRequest {
     pub use_worktree: bool,
     #[serde(default)]
     pub worktree_name: Option<String>,
-    /// Defaults to Terminal so existing clients that don't send `mode`
-    /// continue to get a PTY session.
-    #[serde(default)]
+    #[serde(flatten)]
     pub mode: SessionMode,
+}
+
+#[derive(Deserialize)]
+struct CreateConvRequestRaw {
+    title: String,
+    #[serde(default = "default_program")]
+    program: String,
+    #[serde(default = "default_cwd")]
+    cwd: String,
+    proxy: Option<String>,
+    #[serde(default = "default_true")]
+    use_worktree: bool,
+    #[serde(default)]
+    worktree_name: Option<String>,
+    #[serde(flatten)]
+    mode_extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for CreateConvRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = CreateConvRequestRaw::deserialize(de)?;
+        let mode = mode_from_extras(raw.mode_extra).map_err(serde::de::Error::custom)?;
+        Ok(CreateConvRequest {
+            title: raw.title,
+            program: raw.program,
+            cwd: raw.cwd,
+            proxy: raw.proxy,
+            use_worktree: raw.use_worktree,
+            worktree_name: raw.worktree_name,
+            mode,
+        })
+    }
 }
 
 fn default_program() -> String {
@@ -211,15 +327,33 @@ fn build_command(
 }
 
 /// Build proxy environment variables from a proxy URL.
+///
+/// Always pairs the proxy variables with a NO_PROXY exemption for the
+/// loopback addresses. Chat-mode claudes hit the local MCP server at
+/// `http://127.0.0.1:<port>/mcp/<id>` (see `write_mcp_config_file`); without
+/// this exemption, an upstream proxy intercepts those requests and either
+/// refuses internal addresses or routes them to the wrong host, breaking
+/// every MCP tool call (introduce, send_message, etc.). NO_PROXY is set
+/// even when no user proxy is provided, so any proxy inherited from the
+/// surrounding shell environment also gets exempted for loopback.
 fn proxy_env(proxy: Option<&str>) -> Vec<(String, String)> {
-    proxy.map(|p| {
-        vec![
+    // Cover the common loopback aliases. Most HTTP clients (curl, libcurl,
+    // node, reqwest, fetch) treat NO_PROXY entries as substring/suffix
+    // matches; "127.0.0.1,localhost,::1,0.0.0.0" works across all of them.
+    let no_proxy = "127.0.0.1,localhost,::1,0.0.0.0";
+    let mut env = vec![
+        ("NO_PROXY".to_string(), no_proxy.to_string()),
+        ("no_proxy".to_string(), no_proxy.to_string()),
+    ];
+    if let Some(p) = proxy {
+        env.extend([
             ("HTTP_PROXY".to_string(), p.to_string()),
             ("HTTPS_PROXY".to_string(), p.to_string()),
             ("http_proxy".to_string(), p.to_string()),
             ("https_proxy".to_string(), p.to_string()),
-        ]
-    }).unwrap_or_default()
+        ]);
+    }
+    env
 }
 
 /// Build the resume command for a claude session.
@@ -306,6 +440,70 @@ fn save_session(meta: &SessionMeta, project_cwd: &str) {
 fn remove_session_file(id: &Uuid, project_cwd: &str) {
     let path = sessions_dir(project_cwd).join(format!("{}.json", id));
     let _ = std::fs::remove_file(path);
+    // Also drop the auto-generated MCP config file (best-effort: missing
+    // file is not an error). Holds a Bearer token, so we'd rather not
+    // leave it lying around after the session it was scoped to is gone.
+    let _ = std::fs::remove_file(mcp_config_path(id, project_cwd));
+    // And the per-session todo list — same lifecycle as the session.
+    let _ = std::fs::remove_file(todos_path(id, project_cwd));
+}
+
+// -- per-session todo list ---------------------------------------------------
+
+/// One todo entry. Keeps the shape close to Claude Code's TodoWrite tool so
+/// orchestrators that already know that vocabulary feel at home.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+pub struct Todo {
+    /// Stable id within a session — the orchestrator picks it (string,
+    /// arbitrary). Lets future updates reference an existing entry.
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub status: TodoStatus,
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+fn todos_path(id: &Uuid, project_cwd: &str) -> PathBuf {
+    sessions_dir(project_cwd).join(format!("{}.todos.json", id))
+}
+
+/// Read the todo list for `id`. Empty list when the file is missing —
+/// callers shouldn't have to special-case "first time" vs "really empty".
+pub fn read_todos(id: &Uuid, project_cwd: &str) -> Vec<Todo> {
+    let path = todos_path(id, project_cwd);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("failed to parse todos {path:?}: {e}");
+        Vec::new()
+    })
+}
+
+/// Replace the todo list for `id` wholesale. Mirrors Claude Code's
+/// TodoWrite semantics — the orchestrator sends the full list, server
+/// persists it. Atomic write via tempfile-rename so a crashed write can't
+/// truncate to half a list.
+pub fn write_todos(id: &Uuid, project_cwd: &str, todos: &[Todo]) -> Result<(), String> {
+    let path = todos_path(id, project_cwd);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create todos dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(todos).map_err(|e| format!("serialize todos: {e}"))?;
+    let tmp = path.with_extension("todos.json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| format!("write todos tmp: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename todos: {e}"))?;
+    Ok(())
 }
 
 /// Load all session metadata from .neige/sessions/
@@ -373,63 +571,260 @@ async fn spawn_and_connect_chat(
     }
 }
 
-/// Build the chat-mode argv for a claude subprocess. The first element is
-/// the binary; the rest are claude flags. `resume` toggles `--resume`
-/// vs `--session-id`.
-fn build_chat_argv(program: &str, session_id: &Uuid, resume: bool) -> Vec<String> {
-    // For now we only know how to drive `claude` headless. If the program is
-    // something else, fall back to splitting it on whitespace and trust the
-    // caller. The MVP only ships the claude path.
-    let bin = if program.is_empty() || program == "claude" || program.starts_with("claude") {
-        "claude".to_string()
-    } else {
-        program.split_whitespace().next().unwrap_or("claude").to_string()
+/// Settings for auto-injecting an `--mcp-config` file into chat sessions.
+///
+/// Stored on the manager and consulted at create/resume time. `base_url`
+/// is *always* loopback for chat-spawned claudes (even when the server is
+/// listening on 0.0.0.0) — the inner claude shares a host with the server.
+#[derive(Clone)]
+pub struct McpInjectConfig {
+    pub base_url: String,
+    pub internal_token: std::sync::Arc<String>,
+    /// If true, skip injection entirely. Useful as a kill-switch when the
+    /// inner claude shouldn't be aware of the orchestrator (e.g. the user
+    /// wants completely sandboxed sessions).
+    pub disabled: bool,
+}
+
+impl McpInjectConfig {
+    pub fn loopback(port: u16, internal_token: std::sync::Arc<String>, disabled: bool) -> Self {
+        Self {
+            base_url: format!("http://127.0.0.1:{port}"),
+            internal_token,
+            disabled,
+        }
+    }
+}
+
+/// Settings for the chat-mode Node runner that the daemon spawns instead of
+/// `claude --print` directly.
+///
+/// Track A's `runners/neige-chat-runner/` is a Node sidecar built on the
+/// official `@anthropic-ai/claude-agent-sdk`. The Rust daemon (Track B)
+/// spawns `node <runner-path> --session-id ... --cwd ... [--resume]
+/// [--mcp-config ...]` and pipes its stdout (NeigeEvent JSON lines) the same
+/// way it used to pipe claude's stream-json output.
+///
+/// `path` is the absolute path to the runner's compiled `cli.js`, computed
+/// once at startup by `resolve_runner_path` and threaded through the
+/// manager so every chat-session create / resume sees the same value.
+#[derive(Clone)]
+pub struct RunnerConfig {
+    pub path: PathBuf,
+}
+
+/// Resolve the path to the chat-runner CLI entrypoint.
+///
+/// Resolution order (first hit wins):
+///   1. `NEIGE_RUNNER_PATH` env var, if set and non-empty.
+///   2. Sibling-of-binary lookup: `<exe-dir>/../../runners/neige-chat-runner/dist/cli.js`,
+///      walking up from `std::env::current_exe()` so packaged builds find
+///      the runner relative to the neige-server binary.
+///   3. Workspace fallback: `runners/neige-chat-runner/dist/cli.js` joined
+///      onto the `cargo` workspace root (parent of `CARGO_MANIFEST_DIR`),
+///      so `cargo run` from a fresh checkout works without env setup.
+///
+/// Returns the resolved path even if the file doesn't exist on disk —
+/// the daemon will surface the spawn failure with a clearer error than this
+/// resolver could ("ENOENT on `node <path>`") so we don't try to be cleverer
+/// here.
+pub fn resolve_runner_path() -> PathBuf {
+    if let Ok(p) = std::env::var("NEIGE_RUNNER_PATH")
+        && !p.is_empty()
+    {
+        return PathBuf::from(p);
+    }
+    // Sibling-of-binary first so installed/packaged setups don't accidentally
+    // resolve to a stale workspace clone hanging around in CARGO_MANIFEST_DIR.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(bin_dir) = exe.parent()
+    {
+        // <bin_dir>/../runners/neige-chat-runner/dist/cli.js — covers
+        // `target/release/` and `target/debug/` siblings of `runners/`.
+        if let Some(workspace_guess) = bin_dir.parent().and_then(|p| p.parent()) {
+            let candidate = workspace_guess
+                .join("runners")
+                .join("neige-chat-runner")
+                .join("dist")
+                .join("cli.js");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    // Workspace fallback — handy in dev where the binary lives in
+    // target/{debug,release}/ and the runner sits at the workspace root.
+    let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
+    let workspace = std::path::Path::new(manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    workspace
+        .join("runners")
+        .join("neige-chat-runner")
+        .join("dist")
+        .join("cli.js")
+}
+
+/// Path of the per-session MCP config file (lives next to session metadata).
+fn mcp_config_path(id: &Uuid, project_cwd: &str) -> PathBuf {
+    sessions_dir(project_cwd).join(format!("{}.mcp.json", id))
+}
+
+/// Write a per-session `mcp-internal.json` referencing the global `/mcp` route
+/// so the inner claude can list/create/send to sibling sessions, plus the
+/// per-session `/mcp/<id>` route for self-scoped tools (read_log/stop/get_info).
+///
+/// Returns `Some(path)` on success (caller passes it to `--mcp-config`), or
+/// `None` if injection is disabled. Errors are logged + treated as "no inject"
+/// — a missing config file is recoverable, a panicked spawn isn't.
+fn write_mcp_config_file(
+    id: &Uuid,
+    project_cwd: &str,
+    cfg: &McpInjectConfig,
+) -> Option<PathBuf> {
+    if cfg.disabled {
+        return None;
+    }
+    let path = mcp_config_path(id, project_cwd);
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("failed to create mcp config dir: {e}");
+        return None;
+    }
+
+    // Two entries:
+    //   - `neige`             → /mcp/<id>      (self + global tools merged)
+    //   - `neige_orchestrate` → /mcp           (global tools only — handy if
+    //                            the inner claude wants the *strict* shape
+    //                            without self-scoped tools cluttering)
+    let auth_header = format!("Bearer {}", cfg.internal_token);
+    let body = serde_json::json!({
+        "mcpServers": {
+            "neige": {
+                "type": "http",
+                "url": format!("{}/mcp/{}", cfg.base_url, id),
+                "headers": {"Authorization": auth_header},
+            },
+        }
+    });
+
+    let json = match serde_json::to_string_pretty(&body) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialize mcp config: {e}");
+            return None;
+        }
     };
-    let mut argv = vec![
-        bin,
-        "--print".to_string(),
-        // Claude CLI rejects --print + --output-format=stream-json without
-        // --verbose ("Error: When using --print, --output-format=stream-json
-        // requires --verbose"). Without this flag the subprocess exits 1
-        // immediately, the daemon sees ChildExited, and the socket vanishes
-        // — so user-message frames write into the void.
-        "--verbose".to_string(),
-        "--input-format=stream-json".to_string(),
-        "--output-format=stream-json".to_string(),
-        "--include-partial-messages".to_string(),
-        "--include-hook-events".to_string(),
-        // AskUserQuestion is a built-in tool the Claude Code TUI intercepts
-        // via canUseTool to render an interactive picker. In --print mode
-        // there is no canUseTool callback so the harness fallback returns a
-        // 17-char placeholder ("Answer questions?") immediately, which
-        // claude reads as the answer and moves on — the user never sees a
-        // popup. Until we ship a real MCP-based replacement (Wave 5), block
-        // the tool so the model writes questions as markdown instead.
-        "--disallowedTools".to_string(),
-        "AskUserQuestion".to_string(),
+
+    if let Err(e) = std::fs::write(&path, json) {
+        tracing::warn!("failed to write mcp config {path:?}: {e}");
+        return None;
+    }
+    // Mode 0600 — the file holds a Bearer token. Best-effort; we don't
+    // fatally fail if the platform refuses (Windows / unusual filesystems).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Some(path)
+}
+
+/// Build the daemon flag list for a chat-mode session.
+///
+/// Returns the *flags* the `neige-session-daemon --mode chat` invocation
+/// needs (NOT a full argv). The daemon itself spawns `node <runner-path>`
+/// internally per these flags — we no longer hand-roll claude argv on the
+/// server side. The hand-rolled `--print --verbose --input-format=...
+/// --disallowedTools AskUserQuestion` story moved into the runner: the
+/// official `@anthropic-ai/claude-agent-sdk` already handles stream-json
+/// framing, partial messages, and hook events natively, and the runner
+/// owns canUseTool so AskUserQuestion no longer has to be blocked.
+///
+/// Flag order:
+///   `--runner-path <path> --cwd <cwd>`
+///   `[--resume] [--mcp-config <path>] [--program <program>]`
+///
+/// The session uuid is NOT in this list — the daemon already receives it
+/// via its own pre-existing `--id` flag (assembled by `spawn_daemon`) and
+/// forwards it to the runner as `--session-id` internally. Adding
+/// `--session-id` here would duplicate the value and trip the daemon's
+/// clap parser, which doesn't define that flag.
+///
+/// `program` is forwarded as informational metadata (the runner doesn't
+/// shell out — claude is loaded as an SDK module) but kept on the wire so
+/// the daemon can log it.
+fn build_runner_args(
+    runner_path: &Path,
+    program: &str,
+    cwd: &str,
+    resume: bool,
+    mcp_config_path: Option<&Path>,
+) -> Vec<String> {
+    let mut args = vec![
+        "--runner-path".to_string(),
+        runner_path.to_string_lossy().to_string(),
+        "--cwd".to_string(),
+        cwd.to_string(),
     ];
     if resume {
-        argv.push("--resume".to_string());
-        argv.push(session_id.to_string());
-    } else {
-        argv.push("--session-id".to_string());
-        argv.push(session_id.to_string());
+        args.push("--resume".to_string());
     }
-    argv
+    if let Some(path) = mcp_config_path {
+        args.push("--mcp-config".to_string());
+        args.push(path.to_string_lossy().to_string());
+    }
+    if !program.is_empty() {
+        args.push("--program".to_string());
+        args.push(program.to_string());
+    }
+    args
 }
 
 /// Manages all conversations.
 pub struct ConversationManager {
     convs: HashMap<Uuid, Conversation>,
+    /// Secondary index for chat sessions: chat name → uuid. Lets MCP tools
+    /// resolve a name handed in by an AI caller to the internal Conversation
+    /// in O(1). Only chat sessions are inserted; terminal sessions never
+    /// participate in name addressing. Kept in sync by `create`, `remove`,
+    /// `rename_chat`, and `load_from_disk`.
+    chat_by_name: HashMap<String, Uuid>,
     /// The base project directory (where .neige/ lives)
     project_cwd: String,
+    /// MCP injection settings for chat sessions. None means no injection
+    /// (e.g. unit tests that don't need it); otherwise written into a
+    /// per-session JSON and passed to claude via `--mcp-config`.
+    mcp_inject: Option<McpInjectConfig>,
+    /// Resolved runner CLI path threaded into every chat-session spawn.
+    /// None disables chat creation (resume on a chat session also fails) —
+    /// only relevant in unit tests that never spawn chats.
+    runner: Option<RunnerConfig>,
 }
 
 impl ConversationManager {
     pub fn new(project_cwd: &str) -> Self {
+        Self::with_config(project_cwd, None, None)
+    }
+
+    pub fn with_mcp_inject(project_cwd: &str, mcp_inject: Option<McpInjectConfig>) -> Self {
+        Self::with_config(project_cwd, mcp_inject, None)
+    }
+
+    pub fn with_config(
+        project_cwd: &str,
+        mcp_inject: Option<McpInjectConfig>,
+        runner: Option<RunnerConfig>,
+    ) -> Self {
         let mut mgr = Self {
             convs: HashMap::new(),
+            chat_by_name: HashMap::new(),
             project_cwd: project_cwd.to_string(),
+            mcp_inject,
+            runner,
         };
         mgr.load_from_disk();
         mgr
@@ -446,6 +841,25 @@ impl ConversationManager {
             let created_at = chrono::DateTime::parse_from_rfc3339(&meta.created_at)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
                 .unwrap_or_else(|_| chrono::Utc::now());
+            // Reject duplicate chat names defensively (shouldn't happen given
+            // the create-time uniqueness check, but a hand-edited session
+            // file could). The first occurrence wins; subsequent ones load
+            // their conv but leave the name index pointing at the original.
+            if let SessionMode::Chat { name } = &meta.mode {
+                match self.chat_by_name.get(name) {
+                    Some(existing) if *existing != meta.id => {
+                        tracing::warn!(
+                            "duplicate chat name '{name}' on disk: keeping {existing}, \
+                             leaving {} unindexed (rename it via the API to make it \
+                             addressable again)",
+                            meta.id
+                        );
+                    }
+                    _ => {
+                        self.chat_by_name.insert(name.clone(), meta.id);
+                    }
+                }
+            }
             let conv = Conversation {
                 id: meta.id,
                 title: meta.title,
@@ -487,7 +901,20 @@ impl ConversationManager {
         let use_worktree = req.use_worktree && is_git;
         let env = proxy_env(req.proxy.as_deref());
 
-        let (client, chat_client, worktree_branch) = match req.mode {
+        // Validate chat name up front: must be non-empty (uniqueness check
+        // happens in commit 2 once the manager carries a name index).
+        if let SessionMode::Chat { name } = &req.mode
+            && name.trim().is_empty()
+        {
+            return Err("chat session requires a non-empty name".to_string());
+        }
+        if let SessionMode::Chat { name } = &req.mode
+            && self.chat_by_name.contains_key(name)
+        {
+            return Err(format!("chat session name '{name}' already in use"));
+        }
+
+        let (client, chat_client, worktree_branch) = match &req.mode {
             SessionMode::Terminal => {
                 let command = build_command(
                     &req.program,
@@ -509,16 +936,35 @@ impl ConversationManager {
                 let client = spawn_and_connect(&id, &command, &cwd, &env).await?;
                 (Some(client), None, worktree_branch)
             }
-            SessionMode::Chat => {
+            SessionMode::Chat { .. } => {
                 // Worktrees are a Claude CLI feature wired through the
                 // `--worktree` flag, which only makes sense when claude
                 // owns the session. The headless chat path doesn't manage
                 // worktrees yet — we just spawn in `cwd` directly.
-                let argv = build_chat_argv(&req.program, &id, false);
-                tracing::info!(
-                    "spawning chat session {id}: argv={argv:?}, cwd={cwd:?}"
+                let mcp_path = self
+                    .mcp_inject
+                    .as_ref()
+                    .and_then(|cfg| write_mcp_config_file(&id, &self.project_cwd, cfg));
+                let runner_path = self
+                    .runner
+                    .as_ref()
+                    .map(|r| r.path.clone())
+                    .ok_or_else(|| {
+                        "chat session requested but no runner path configured \
+                         (set NEIGE_RUNNER_PATH or build runners/neige-chat-runner)"
+                            .to_string()
+                    })?;
+                let runner_args = build_runner_args(
+                    &runner_path,
+                    &req.program,
+                    &cwd,
+                    false,
+                    mcp_path.as_deref(),
                 );
-                let chat = spawn_and_connect_chat(&id, &argv, &cwd, &env).await?;
+                tracing::info!(
+                    "spawning chat session {id}: runner_args={runner_args:?}, cwd={cwd:?}"
+                );
+                let chat = spawn_and_connect_chat(&id, &runner_args, &cwd, &env).await?;
                 (None, Some(chat), None)
             }
         };
@@ -539,6 +985,9 @@ impl ConversationManager {
 
         let info = conv.info();
         save_session(&conv.meta(), &self.project_cwd);
+        if let SessionMode::Chat { name } = &conv.mode {
+            self.chat_by_name.insert(name.clone(), id);
+        }
         self.convs.insert(id, conv);
         Ok(info)
     }
@@ -549,7 +998,7 @@ impl ConversationManager {
         let conv = self.convs.get_mut(id)
             .ok_or_else(|| "session not found".to_string())?;
 
-        match conv.mode {
+        match &conv.mode {
             SessionMode::Terminal => {
                 if conv.client.as_ref().is_some_and(|c| c.is_alive()) {
                     return Ok(conv.info());
@@ -574,14 +1023,36 @@ impl ConversationManager {
                 let client = spawn_and_connect(&conv.id, &command, &cwd, &env).await?;
                 conv.client = Some(client);
             }
-            SessionMode::Chat => {
+            SessionMode::Chat { .. } => {
                 if conv.chat_client.as_ref().is_some_and(|c| c.is_alive()) {
                     return Ok(conv.info());
                 }
-                let argv = build_chat_argv(&conv.program, &conv.id, true);
-                let env = proxy_env(conv.proxy.as_deref());
+                // Rewrite the MCP config in case the internal token rotated
+                // since the previous spawn (server restart). Cheap, and
+                // keeps the file's lifetime aligned with the daemon's.
+                let mcp_path = self
+                    .mcp_inject
+                    .as_ref()
+                    .and_then(|cfg| write_mcp_config_file(&conv.id, &self.project_cwd, cfg));
+                let runner_path = self
+                    .runner
+                    .as_ref()
+                    .map(|r| r.path.clone())
+                    .ok_or_else(|| {
+                        "chat session resume requested but no runner path configured \
+                         (set NEIGE_RUNNER_PATH or build runners/neige-chat-runner)"
+                            .to_string()
+                    })?;
                 let cwd = conv.cwd.clone();
-                let chat = spawn_and_connect_chat(&conv.id, &argv, &cwd, &env).await?;
+                let runner_args = build_runner_args(
+                    &runner_path,
+                    &conv.program,
+                    &cwd,
+                    true,
+                    mcp_path.as_deref(),
+                );
+                let env = proxy_env(conv.proxy.as_deref());
+                let chat = spawn_and_connect_chat(&conv.id, &runner_args, &cwd, &env).await?;
                 conv.chat_client = Some(chat);
             }
         }
@@ -600,7 +1071,22 @@ impl ConversationManager {
         self.convs.get(id)
     }
 
-    /// Update conversation metadata (e.g. title).
+    /// Resolve a chat session name to its uuid. Returns `None` for unknown
+    /// names or if the named session isn't currently loaded. Terminal
+    /// sessions are never indexed by name and won't appear here.
+    pub fn id_by_chat_name(&self, name: &str) -> Option<Uuid> {
+        self.chat_by_name.get(name).copied()
+    }
+
+    /// Resolve a chat session name straight to its Conversation. Convenience
+    /// over `id_by_chat_name` + `get` for callers that need the conv directly.
+    pub fn get_by_chat_name(&self, name: &str) -> Option<&Conversation> {
+        self.id_by_chat_name(name).and_then(|id| self.convs.get(&id))
+    }
+
+    /// Update conversation metadata (e.g. title). Title is a free-form
+    /// display label; no uniqueness check. To rename a chat session's
+    /// addressing handle, call `rename_chat` instead.
     pub fn update(&mut self, id: &Uuid, title: Option<&str>) -> Option<ConvInfo> {
         let conv = self.convs.get_mut(id)?;
         if let Some(t) = title {
@@ -610,6 +1096,47 @@ impl ConversationManager {
         Some(conv.info())
     }
 
+    /// Rename a chat session's addressing handle. Errors if the target is
+    /// not a chat session, the new name is empty, or the new name collides
+    /// with another chat session. The `chat_by_name` index is updated
+    /// atomically with the in-memory model and the persisted metadata.
+    pub fn rename_chat(&mut self, id: &Uuid, new_name: &str) -> Result<ConvInfo, String> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err("chat session name cannot be empty".to_string());
+        }
+        // Uniqueness check before mutating anything. A no-op rename (same
+        // name to same session) is allowed and returns Ok.
+        if let Some(existing) = self.chat_by_name.get(trimmed)
+            && existing != id
+        {
+            return Err(format!("chat session name '{trimmed}' already in use"));
+        }
+        let conv = self
+            .convs
+            .get_mut(id)
+            .ok_or_else(|| "session not found".to_string())?;
+        let old_name = match &conv.mode {
+            SessionMode::Chat { name } => name.clone(),
+            SessionMode::Terminal => {
+                return Err(
+                    "cannot rename a terminal session (only chat sessions have names)".to_string(),
+                );
+            }
+        };
+        conv.mode = SessionMode::Chat {
+            name: trimmed.to_string(),
+        };
+        // Drop the old index entry first so a same-name no-op rename doesn't
+        // briefly leave a stale entry between remove and insert.
+        if old_name != trimmed {
+            self.chat_by_name.remove(&old_name);
+            self.chat_by_name.insert(trimmed.to_string(), *id);
+        }
+        save_session(&conv.meta(), &self.project_cwd);
+        Ok(conv.info())
+    }
+
     /// Remove a conversation and clean up its session file.
     pub async fn remove(&mut self, id: &Uuid) {
         // Kill the session daemon so the inner program stops; dropping only
@@ -617,7 +1144,15 @@ impl ConversationManager {
         // orphaned.
         daemon::kill_session(id).await;
         remove_session_file(id, &self.project_cwd);
-        self.convs.remove(id);
+        if let Some(conv) = self.convs.remove(id)
+            && let SessionMode::Chat { name } = &conv.mode
+        {
+            // Only drop the index entry if it still points at this id —
+            // a rename mid-flight would have already replaced it.
+            if self.chat_by_name.get(name).copied() == Some(*id) {
+                self.chat_by_name.remove(name);
+            }
+        }
     }
 }
 
@@ -627,23 +1162,86 @@ pub fn new_shared_manager(project_cwd: &str) -> SharedManager {
     Arc::new(Mutex::new(ConversationManager::new(project_cwd)))
 }
 
+pub fn new_shared_manager_with_inject(
+    project_cwd: &str,
+    mcp_inject: Option<McpInjectConfig>,
+) -> SharedManager {
+    Arc::new(Mutex::new(ConversationManager::with_mcp_inject(
+        project_cwd,
+        mcp_inject,
+    )))
+}
+
+pub fn new_shared_manager_with_config(
+    project_cwd: &str,
+    mcp_inject: Option<McpInjectConfig>,
+    runner: Option<RunnerConfig>,
+) -> SharedManager {
+    Arc::new(Mutex::new(ConversationManager::with_config(
+        project_cwd,
+        mcp_inject,
+        runner,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn session_mode_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&SessionMode::Terminal).unwrap(), "\"terminal\"");
-        assert_eq!(serde_json::to_string(&SessionMode::Chat).unwrap(), "\"chat\"");
+    fn session_mode_terminal_round_trips_via_meta() {
+        // SessionMode is internally tagged on `mode` and only meaningful when
+        // flattened into a carrying struct (the tag field becomes a sibling
+        // of the struct's fields). Round-trip through SessionMeta to reflect
+        // how it actually serializes on the wire.
+        let meta = SessionMeta {
+            id: Uuid::nil(),
+            title: "t".into(),
+            program: "claude".into(),
+            cwd: "/tmp".into(),
+            proxy: None,
+            use_worktree: false,
+            worktree_branch: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_active: "2024-01-01T00:00:00Z".into(),
+            mode: SessionMode::Terminal,
+        };
+        let s = serde_json::to_string(&meta).unwrap();
+        assert!(s.contains(r#""mode":"terminal""#));
+        // No `name` field on terminal sessions.
+        assert!(!s.contains(r#""name""#));
+        let parsed: SessionMeta = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed.mode, SessionMode::Terminal);
     }
 
     #[test]
-    fn session_mode_round_trip() {
-        for m in [SessionMode::Terminal, SessionMode::Chat] {
-            let s = serde_json::to_string(&m).unwrap();
-            let parsed: SessionMode = serde_json::from_str(&s).unwrap();
-            assert_eq!(parsed, m);
-        }
+    fn session_mode_chat_carries_name_in_flat_json() {
+        // Chat variant flattens its `name` field next to `mode` rather than
+        // nesting it. Locks the wire shape AI clients see.
+        let meta = SessionMeta {
+            id: Uuid::nil(),
+            title: "t".into(),
+            program: "claude".into(),
+            cwd: "/tmp".into(),
+            proxy: None,
+            use_worktree: false,
+            worktree_branch: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_active: "2024-01-01T00:00:00Z".into(),
+            mode: SessionMode::Chat {
+                name: "scraper".into(),
+            },
+        };
+        let s = serde_json::to_string(&meta).unwrap();
+        assert!(s.contains(r#""mode":"chat""#));
+        assert!(s.contains(r#""name":"scraper""#));
+        let parsed: SessionMeta = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            parsed.mode,
+            SessionMode::Chat {
+                name: "scraper".into()
+            }
+        );
     }
 
     #[test]
@@ -653,8 +1251,8 @@ mod tests {
 
     #[test]
     fn legacy_session_meta_loads_as_terminal() {
-        // Old session files written before the `mode` field existed must
-        // still deserialize, defaulting to Terminal.
+        // Pre-`mode`-field session files must still deserialize, defaulting
+        // to Terminal (achieved via `#[serde(flatten, default)]`).
         let legacy = serde_json::json!({
             "id": "00000000-0000-0000-0000-000000000001",
             "title": "old",
@@ -671,6 +1269,47 @@ mod tests {
     }
 
     #[test]
+    fn explicit_terminal_session_meta_loads() {
+        // Sessions written after `mode` was added (but before chat existed)
+        // include `mode: "terminal"` explicitly and no `name` field.
+        let v = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "old",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+            "worktree_branch": null,
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_active": "2024-01-01T00:00:00Z",
+            "mode": "terminal",
+        });
+        let meta: SessionMeta = serde_json::from_value(v).unwrap();
+        assert_eq!(meta.mode, SessionMode::Terminal);
+    }
+
+    #[test]
+    fn chat_session_meta_without_name_fails() {
+        // Pre-launch invariant: chat-mode persistence MUST carry `name`.
+        // If a hand-written or pre-name-field chat session file shows up,
+        // we want a hard parse error rather than silently constructing a
+        // chat session with an empty name.
+        let v = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "old chat",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+            "worktree_branch": null,
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_active": "2024-01-01T00:00:00Z",
+            "mode": "chat",
+        });
+        assert!(serde_json::from_value::<SessionMeta>(v).is_err());
+    }
+
+    #[test]
     fn create_conv_request_default_mode_is_terminal() {
         let body = serde_json::json!({
             "title": "x",
@@ -684,7 +1323,29 @@ mod tests {
     }
 
     #[test]
-    fn create_conv_request_accepts_chat_mode() {
+    fn create_conv_request_accepts_chat_mode_with_name() {
+        let body = serde_json::json!({
+            "title": "x",
+            "program": "claude",
+            "cwd": "/tmp",
+            "proxy": null,
+            "use_worktree": false,
+            "mode": "chat",
+            "name": "scraper",
+        });
+        let req: CreateConvRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(
+            req.mode,
+            SessionMode::Chat {
+                name: "scraper".into()
+            }
+        );
+    }
+
+    #[test]
+    fn create_conv_request_chat_mode_without_name_fails() {
+        // Type-system invariant: `mode: "chat"` requires `name`. The wire
+        // shape rejects requests that omit it, before any handler runs.
         let body = serde_json::json!({
             "title": "x",
             "program": "claude",
@@ -693,71 +1354,196 @@ mod tests {
             "use_worktree": false,
             "mode": "chat",
         });
-        let req: CreateConvRequest = serde_json::from_value(body).unwrap();
-        assert_eq!(req.mode, SessionMode::Chat);
+        assert!(serde_json::from_value::<CreateConvRequest>(body).is_err());
     }
 
-    #[test]
-    fn build_chat_argv_fresh_uses_session_id() {
-        let id = Uuid::nil();
-        let argv = build_chat_argv("claude", &id, false);
-        assert_eq!(argv[0], "claude");
-        assert!(argv.iter().any(|a| a == "--print"));
-        assert!(argv.iter().any(|a| a == "--input-format=stream-json"));
-        assert!(argv.iter().any(|a| a == "--output-format=stream-json"));
-        assert!(argv.iter().any(|a| a == "--session-id"));
-        assert!(!argv.iter().any(|a| a == "--resume"));
-    }
-
-    #[test]
-    fn build_chat_argv_resume_uses_resume_flag() {
-        let id = Uuid::nil();
-        let argv = build_chat_argv("claude", &id, true);
-        assert!(argv.iter().any(|a| a == "--resume"));
-        assert!(!argv.iter().any(|a| a == "--session-id"));
-    }
-
-    #[test]
-    fn build_chat_argv_includes_verbose() {
-        // Claude CLI rejects `--print --output-format=stream-json` without
-        // `--verbose`. Locking this assertion so a future refactor can't
-        // strip it again — that bug had the daemon spawn claude, claude
-        // exit code 1 instantly, the socket vanish, and the user's chat
-        // turns silently dropped.
-        for resume in [false, true] {
-            let argv = build_chat_argv("claude", &Uuid::nil(), resume);
-            assert!(
-                argv.iter().any(|a| a == "--verbose"),
-                "build_chat_argv must include --verbose (resume={resume}): got {argv:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn build_chat_argv_includes_partial_messages_and_hook_events() {
-        // Mode B's value prop depends on partial-message deltas (live token
-        // streaming) and hook events (permission-prompt observability). Lock
-        // both flags.
-        let argv = build_chat_argv("claude", &Uuid::nil(), false);
-        assert!(argv.iter().any(|a| a == "--include-partial-messages"));
-        assert!(argv.iter().any(|a| a == "--include-hook-events"));
-    }
-
-    #[test]
-    fn build_chat_argv_disallows_ask_user_question() {
-        // Until we ship an MCP-based AskUser tool, block the built-in so the
-        // model writes questions as text instead of triggering the --print
-        // harness's 17-char placeholder.
-        let argv = build_chat_argv("claude", &Uuid::nil(), false);
-        let mut iter = argv.iter();
-        let mut found = false;
+    /// Helper: pluck the value following a flag, asserting the flag is present.
+    /// Returns None if the flag isn't there at all (caller asserts on that).
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let mut iter = args.iter();
         while let Some(a) = iter.next() {
-            if a == "--disallowedTools" {
-                assert_eq!(iter.next().map(|s| s.as_str()), Some("AskUserQuestion"));
-                found = true;
-                break;
+            if a == flag {
+                return iter.next().map(|s| s.as_str());
             }
         }
-        assert!(found, "missing --disallowedTools AskUserQuestion: {argv:?}");
+        None
+    }
+
+    #[test]
+    fn build_runner_args_fresh_omits_resume() {
+        // Fresh sessions don't carry `--resume` — the daemon (and, downstream,
+        // the runner SDK) starts a new conversation. The session uuid is
+        // delivered separately via the daemon's own `--id` flag (assembled by
+        // `spawn_daemon`), so build_runner_args neither emits nor needs it.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
+        assert!(!args.iter().any(|a| a == "--resume"));
+        // Locked: session-id MUST NOT be in the runner-args list, otherwise
+        // it duplicates the daemon's `--id` and trips the daemon's clap.
+        assert!(!args.iter().any(|a| a == "--session-id"));
+    }
+
+    #[test]
+    fn build_runner_args_resume_uses_resume_flag() {
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", "/tmp", true, None);
+        assert!(args.iter().any(|a| a == "--resume"));
+    }
+
+    #[test]
+    fn build_runner_args_threads_mcp_config_path() {
+        // The runner forwards `--mcp-config` straight to the inner claude
+        // SDK, so the file written by `write_mcp_config_file` still lands
+        // in the right place.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let mcp = std::path::PathBuf::from("/tmp/neige-fake-mcp.json");
+        let args = build_runner_args(&runner, "claude", "/tmp", false, Some(&mcp));
+        assert_eq!(
+            flag_value(&args, "--mcp-config"),
+            Some("/tmp/neige-fake-mcp.json")
+        );
+    }
+
+    #[test]
+    fn build_runner_args_omits_mcp_config_when_none() {
+        // None means injection is off (or unit-test scope); the flag must
+        // not appear at all so the runner falls back to its default.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
+    fn build_runner_args_threads_runner_path() {
+        // `--runner-path` is required by the daemon CLI; it tells the
+        // daemon which Node entrypoint to spawn.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude", "/tmp", false, None);
+        assert_eq!(flag_value(&args, "--runner-path"), Some("/opt/neige/runner.js"));
+    }
+
+    #[test]
+    fn build_runner_args_threads_cwd_and_program() {
+        // cwd is required (runner uses it to set the SDK's working dir).
+        // program is informational but kept on the wire so the daemon can
+        // log it — locking it here so a future refactor doesn't quietly
+        // drop it.
+        let runner = std::path::PathBuf::from("/opt/neige/runner.js");
+        let args = build_runner_args(&runner, "claude --custom", "/srv/work", false, None);
+        assert_eq!(flag_value(&args, "--cwd"), Some("/srv/work"));
+        assert_eq!(flag_value(&args, "--program"), Some("claude --custom"));
+    }
+
+    #[test]
+    fn write_mcp_config_file_respects_disabled_flag() {
+        let dir = tempdir_for_test();
+        let cfg = McpInjectConfig {
+            base_url: "http://127.0.0.1:3030".to_string(),
+            internal_token: std::sync::Arc::new("tok".to_string()),
+            disabled: true,
+        };
+        assert!(write_mcp_config_file(&Uuid::nil(), dir.to_str().unwrap(), &cfg).is_none());
+    }
+
+    #[test]
+    fn write_mcp_config_file_writes_expected_json() {
+        // Lock the config schema so a future refactor can't accidentally
+        // change the field names — claude-CLI's --mcp-config parser is
+        // strict and a renamed field surfaces as a confusing 'no servers'.
+        let dir = tempdir_for_test();
+        let cfg = McpInjectConfig {
+            base_url: "http://127.0.0.1:3030".to_string(),
+            internal_token: std::sync::Arc::new("tok-abc".to_string()),
+            disabled: false,
+        };
+        let id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let path = write_mcp_config_file(&id, dir.to_str().unwrap(), &cfg).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let entry = &parsed["mcpServers"]["neige"];
+        assert_eq!(entry["type"], "http");
+        assert_eq!(
+            entry["url"],
+            "http://127.0.0.1:3030/mcp/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(entry["headers"]["Authorization"], "Bearer tok-abc");
+    }
+
+    /// Throwaway tempdir for filesystem tests. We don't pull in the
+    /// `tempfile` crate just for this — std::env::temp_dir + a uuid name
+    /// is sufficient and deterministic enough.
+    fn tempdir_for_test() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("neige-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn read_todos_on_missing_file_returns_empty() {
+        // First-time read must be empty, not an error — saves every caller
+        // from having to special-case "no file yet".
+        let dir = tempdir_for_test();
+        let todos = read_todos(&Uuid::new_v4(), dir.to_str().unwrap());
+        assert!(todos.is_empty());
+    }
+
+    #[test]
+    fn write_then_read_todos_round_trips() {
+        let dir = tempdir_for_test();
+        let id = Uuid::new_v4();
+        let list = vec![
+            Todo {
+                id: "t1".to_string(),
+                text: "do thing".to_string(),
+                status: TodoStatus::Pending,
+            },
+            Todo {
+                id: "t2".to_string(),
+                text: "do other".to_string(),
+                status: TodoStatus::Completed,
+            },
+        ];
+        write_todos(&id, dir.to_str().unwrap(), &list).unwrap();
+        let read_back = read_todos(&id, dir.to_str().unwrap());
+        assert_eq!(read_back, list);
+    }
+
+    #[test]
+    fn write_todos_replaces_wholesale() {
+        // Confirm TodoWrite-style replace semantics — second write doesn't
+        // append, it overwrites. This is the contract the tool documents.
+        let dir = tempdir_for_test();
+        let id = Uuid::new_v4();
+        let first = vec![Todo {
+            id: "a".into(),
+            text: "first".into(),
+            status: TodoStatus::Pending,
+        }];
+        let second = vec![Todo {
+            id: "b".into(),
+            text: "second".into(),
+            status: TodoStatus::InProgress,
+        }];
+        write_todos(&id, dir.to_str().unwrap(), &first).unwrap();
+        write_todos(&id, dir.to_str().unwrap(), &second).unwrap();
+        assert_eq!(read_todos(&id, dir.to_str().unwrap()), second);
+    }
+
+    #[test]
+    fn todo_status_serializes_snake_case() {
+        // The orchestrator-facing wire shape uses snake_case status values
+        // — keep the serde rename in lock-step with the tool docs.
+        assert_eq!(
+            serde_json::to_string(&TodoStatus::InProgress).unwrap(),
+            "\"in_progress\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TodoStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TodoStatus::Completed).unwrap(),
+            "\"completed\""
+        );
     }
 }

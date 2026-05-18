@@ -12,7 +12,12 @@ use crate::conversation::CreateConvRequest;
 
 #[derive(Deserialize)]
 pub(super) struct PatchConvRequest {
+    /// Free-form display label. Both modes; no uniqueness check.
     title: Option<String>,
+    /// Chat session addressing handle. Chat-mode only — sending this for
+    /// a terminal session returns 400. Must be non-empty and not collide
+    /// with another chat session's name.
+    name: Option<String>,
 }
 
 pub(super) async fn list_convs(State(state): State<AppState>) -> impl IntoResponse {
@@ -47,6 +52,14 @@ pub(super) async fn patch_conv(
     Json(req): Json<PatchConvRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let mut mgr = state.manager.lock().await;
+    // Apply rename first so a combined patch (title + name) doesn't end up
+    // with the title saved against the new name only if the rename also
+    // succeeds — both go through `save_session` independently anyway, but
+    // running rename first surfaces collisions before we touch the title.
+    if let Some(new_name) = req.name.as_deref() {
+        mgr.rename_chat(&id, new_name)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
     let info = mgr
         .update(&id, req.title.as_deref())
         .ok_or((StatusCode::NOT_FOUND, "not found".to_string()))?;

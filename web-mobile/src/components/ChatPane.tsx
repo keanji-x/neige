@@ -26,6 +26,10 @@ const STICK_THRESHOLD_PX = 120
  * TerminalPane.
  */
 export function ChatPane({ conv, active, onOverview, onPrev, onNext, canCycle }: Props) {
+  // TODO(mobile-dialog): passthrough events (hook.* and neige.ask_user_question)
+  // are not rendered on mobile yet because this pane iterates timeline.messages
+  // only. Wiring `answerQuestion` here once that's fixed will make the
+  // self-ask dialog work on mobile too.
   const { events, timeline, toolResults, status, sendMessage, stop, isGenerating } = useChatSession({
     sessionId: conv.id,
   })

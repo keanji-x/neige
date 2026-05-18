@@ -13,8 +13,11 @@
 
 pub mod stream_json;
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use uuid::Uuid;
 
 /// Cap on a single frame. Anything larger is either a bug or hostile.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -33,15 +36,25 @@ pub enum ClientMsg {
     /// child-waiter then broadcasts ChildExited and the daemon shuts
     /// itself down.
     Kill,
-    /// Chat-mode user message. The daemon formats this into a stream-json
-    /// input frame: `{"type":"user","message":{"role":"user","content":"..."}}`
-    /// before writing to the child's stdin. Ignored in terminal mode.
+    /// Chat-mode user message. The daemon serializes this onto the Node
+    /// runner's stdin as `{"kind":"user_message","content":"..."}`. The
+    /// runner feeds it into `@anthropic-ai/claude-agent-sdk`'s `query()`.
+    /// Ignored in terminal mode.
     ChatUserMessage { content: String },
-    /// Interrupt an in-flight chat turn. The daemon delivers SIGINT to the
-    /// claude subprocess; claude handles it gracefully (stops generating,
-    /// emits message_stop with an interrupted reason, stays open for the
-    /// next user_message). Ignored in terminal mode.
+    /// Interrupt an in-flight chat turn. Daemon writes
+    /// `{"kind":"stop"}` to the runner's stdin; the runner calls the SDK
+    /// interrupt API. Ignored in terminal mode.
     ChatStop,
+    /// Resolve an `AskUserQuestion` posed by the SDK's `canUseTool`
+    /// callback. Bridges WS frontend → daemon → runner stdin so the
+    /// runner-side `canUseTool` promise can resolve and the agent loop
+    /// proceeds. Daemon writes
+    /// `{"kind":"answer_question","question_id":"<uuid>","answers": {...}}`
+    /// to the runner. Ignored in terminal mode.
+    AnswerQuestion {
+        question_id: Uuid,
+        answers: HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,4 +113,37 @@ where
     r.read_exact(&mut buf).await?;
     let (msg, _) = bincode::serde::decode_from_slice(&buf, bincode_config())?;
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answer_question_bincode_roundtrip() {
+        let qid = Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
+        let original = ClientMsg::AnswerQuestion {
+            question_id: qid,
+            answers: HashMap::from([(
+                "Which option?".to_string(),
+                "the second one".to_string(),
+            )]),
+        };
+        let encoded = bincode::serde::encode_to_vec(&original, bincode_config()).expect("encode");
+        let (decoded, _): (ClientMsg, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode_config()).expect("decode");
+        match decoded {
+            ClientMsg::AnswerQuestion {
+                question_id,
+                answers,
+            } => {
+                assert_eq!(question_id, qid);
+                assert_eq!(
+                    answers.get("Which option?").map(String::as_str),
+                    Some("the second one")
+                );
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
 }

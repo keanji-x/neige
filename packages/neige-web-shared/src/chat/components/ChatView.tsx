@@ -2,34 +2,45 @@
 // a scrollable bubble feed with a compose box pinned to the bottom.
 // Auto-scrolls to bottom on new content unless the user has scrolled away.
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
-import { deriveTimeline, type PassthroughEntry } from '../derive';
+import { deriveTimeline } from '../derive';
 import type { NeigeEvent } from '../types';
-import { DefaultPassthroughCard, lookupRenderer } from '../passthrough';
-import { MessageBubble } from './MessageBubble';
+import type { AnswerQuestionHandler } from '../types';
+import { ChatTimelineView } from './ChatTimelineView';
 import { ComposeBox } from './ComposeBox';
 
 interface ChatViewProps {
   events: NeigeEvent[];
-  onSubmit?: (text: string) => void;
+  onSubmit?: (text: string) => boolean;
   onStop?: () => void;
   isGenerating?: boolean;
+  canSend?: boolean;
+  composePlaceholder?: string;
+  composeStatusText?: string;
+  /**
+   * Optional. Wired by ChatPanel when the chat WS is live so dialog
+   * passthrough renderers (`neige.ask_user_question`) can reply. Static
+   * mounts (e.g. tests, mockEvents demos) leave it undefined and the
+   * dialog renders read-only.
+   */
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 const STICK_THRESHOLD_PX = 120;
 
-export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewProps) {
+export function ChatView({
+  events,
+  onSubmit,
+  onStop,
+  isGenerating,
+  canSend = true,
+  composePlaceholder,
+  composeStatusText,
+  onAnswerQuestion,
+}: ChatViewProps) {
   const { timeline, toolResults } = deriveTimeline(events);
-  const respond = onSubmit ?? (() => {});
-  // Only the most-recent user message is editable; earlier turns belong to the
-  // committed conversation.
-  const lastUserIndex = (() => {
-    for (let i = timeline.messages.length - 1; i >= 0; i -= 1) {
-      if (timeline.messages[i].role === 'user') return i;
-    }
-    return -1;
-  })();
+  const respond = onSubmit ?? (() => false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -89,28 +100,17 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
           {timeline.messages.length === 0 && (
             <Flex justify="center" py="6">
               <Text size="2" color="gray">
-                No messages yet.
+                Start a message to Claude.
               </Text>
             </Flex>
           )}
-          <PassthroughGroup
-            entries={timeline.passthroughs}
-            insertedAfterMessageIndex={null}
+          <ChatTimelineView
+            timeline={timeline}
+            toolResults={toolResults}
+            respond={respond}
+            onAnswerQuestion={onAnswerQuestion}
+            editableLastUser
           />
-          {timeline.messages.map((m, i) => (
-            <Fragment key={m.id}>
-              <MessageBubble
-                message={m}
-                toolResults={toolResults}
-                respond={respond}
-                canEdit={m.role === 'user' && i === lastUserIndex}
-              />
-              <PassthroughGroup
-                entries={timeline.passthroughs}
-                insertedAfterMessageIndex={i}
-              />
-            </Fragment>
-          ))}
           {timeline.result && (
             <Flex justify="center" py="3">
               <Text size="1" color="gray">
@@ -125,35 +125,18 @@ export function ChatView({ events, onSubmit, onStop, isGenerating }: ChatViewPro
 
       <ComposeBox
         onSubmit={(text) => {
-          if (onSubmit) onSubmit(text);
-          else console.log('[ChatView] submit:', text);
+          if (!onSubmit) {
+            console.log('[ChatView] submit:', text);
+            return false;
+          }
+          return onSubmit(text);
         }}
         onStop={onStop}
         isGenerating={isGenerating}
+        canSubmit={canSend}
+        placeholder={composePlaceholder}
+        statusText={composeStatusText}
       />
     </Flex>
-  );
-}
-
-function PassthroughGroup({
-  entries,
-  insertedAfterMessageIndex,
-}: {
-  entries: PassthroughEntry[];
-  insertedAfterMessageIndex: number | null;
-}) {
-  const slice = entries.filter(
-    (e) => e.insertedAfterMessageIndex === insertedAfterMessageIndex,
-  );
-  if (slice.length === 0) return null;
-  return (
-    <>
-      {slice.map((entry) => {
-        const Renderer = lookupRenderer(entry.kind) ?? DefaultPassthroughCard;
-        return (
-          <Renderer key={entry.id} kind={entry.kind} payload={entry.payload} />
-        );
-      })}
-    </>
   );
 }

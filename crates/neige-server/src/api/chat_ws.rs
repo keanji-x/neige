@@ -25,8 +25,8 @@
 //!   ```json
 //!   {"type":"stop"}
 //!   ```
-//!   Forwarded as `ClientMsg::ChatStop`; daemon delivers SIGINT to the
-//!   claude subprocess.
+//!   Forwarded as `ClientMsg::ChatStop`; the chat runner asks the Claude
+//!   SDK to interrupt the in-flight turn.
 //!
 //! ### Server → client
 //!
@@ -48,6 +48,8 @@
 //! clients send their last seq and only receive the delta (or a full
 //! snapshot if the daemon's ring buffer rolled over).
 
+use std::collections::HashMap;
+
 use axum::{
     extract::{
         Path, State, WebSocketUpgrade,
@@ -63,7 +65,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::AppState;
+use super::{AppState, PendingQuestions};
 use crate::attach::chat::AttachResult;
 use crate::conversation::SharedManager;
 
@@ -76,8 +78,17 @@ enum WsClientMsg {
     /// User turn — daemon will wrap and forward to claude stdin.
     UserMessage { content: String },
     /// Interrupt the current claude generation. Forwarded as
-    /// `ClientMsg::ChatStop`; daemon SIGINTs the claude subprocess.
+    /// `ClientMsg::ChatStop`; the runner calls the SDK interrupt API.
     Stop,
+    /// User answered a chat dialog. We first look up the matching MCP
+    /// `ask_question` oneshot in `pending_questions`; if none exists, the
+    /// answer is forwarded to the runner for an SDK AskUserQuestion prompt.
+    /// Unknown question_id is silently dropped — the dialog might have
+    /// expired (server restart purges the registry).
+    AnswerQuestion {
+        question_id: Uuid,
+        answers: HashMap<String, String>,
+    },
 }
 
 /// Wrap a pre-serialized NeigeEvent JSON in `{"seq":N,"event":<json>}`.
@@ -98,8 +109,7 @@ pub(super) async fn chat_ws_handler(
         let mut mgr_lock = mgr.lock().await;
         let needs_resume = match mgr_lock.get(&id) {
             Some(conv) => {
-                conv.chat_client.is_none()
-                    || !conv.chat_client.as_ref().unwrap().is_alive()
+                conv.chat_client.is_none() || !conv.chat_client.as_ref().unwrap().is_alive()
             }
             None => return Err((StatusCode::NOT_FOUND, "not found".to_string())),
         };
@@ -112,15 +122,16 @@ pub(super) async fn chat_ws_handler(
     let conv = mgr_lock
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, "not found".to_string()))?;
-    let client = conv
-        .chat_client
-        .as_ref()
-        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "chat client not available".to_string()))?;
+    let client = conv.chat_client.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "chat client not available".to_string(),
+    ))?;
     let sender = client.ctrl_sender();
     drop(mgr_lock);
 
     let mgr_for_ws = mgr.clone();
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, sender, mgr_for_ws, id)))
+    let pending = state.pending_questions.clone();
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, sender, mgr_for_ws, id, pending)))
 }
 
 async fn handle_ws(
@@ -128,6 +139,7 @@ async fn handle_ws(
     sender: UnboundedSender<ClientMsg>,
     mgr: SharedManager,
     id: Uuid,
+    pending: PendingQuestions,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -135,9 +147,10 @@ async fn handle_ws(
     let last_seq: Option<u64> = match ws_rx.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<WsClientMsg>(&text) {
             Ok(WsClientMsg::Attach { last_seq: ls }) => ls,
-            // A leading user_message or stop before attach is a protocol
-            // violation; close politely.
-            Ok(WsClientMsg::UserMessage { .. }) | Ok(WsClientMsg::Stop) => return,
+            // A leading data frame before attach is a protocol violation;
+            // close politely. AnswerQuestion is included so a stale tab
+            // resuming after dialog timeout doesn't get treated as Attach.
+            Ok(_) => return,
             Err(_) => return,
         },
         Some(Ok(_)) | Some(Err(_)) | None => return,
@@ -233,6 +246,43 @@ async fn handle_ws(
                     Ok(WsClientMsg::Attach { .. }) => {
                         // A second attach on a live connection is a no-op.
                     }
+                    Ok(WsClientMsg::AnswerQuestion {
+                        question_id,
+                        answers,
+                    }) => {
+                        // Dispatch order: in-Rust `pending_questions`
+                        // registry takes priority. The MCP `ask_question`
+                        // tool registers a oneshot keyed by
+                        // (session_id, question_id) when an inner claude
+                        // self-asks; resolving that oneshot wakes the
+                        // tool call up with the user's answer.
+                        //
+                        // If no oneshot matches, the question must have
+                        // come from the runner's canUseTool callback (the
+                        // sidecar's AskUserQuestion replacement). Forward
+                        // the answer to the daemon, which relays it to the
+                        // runner so the in-flight tool call can resolve.
+                        // Unknown-to-both ids fall through and the runner
+                        // logs a debug; this is fine because dialogs that
+                        // expire on either side are best-effort.
+                        let taken = {
+                            let mut pending_lock = pending.lock().await;
+                            pending_lock.remove(&(id, question_id))
+                        };
+                        match taken {
+                            Some(tx) => {
+                                // Best-effort: receiver may have been dropped
+                                // (tool call timed out or was cancelled).
+                                let _ = tx.send(answers);
+                            }
+                            None => {
+                                let _ = sender.send(ClientMsg::AnswerQuestion {
+                                    question_id,
+                                    answers,
+                                });
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::debug!(error = %e, "unparseable chat ws frame");
                     }
@@ -254,6 +304,31 @@ mod tests {
     fn ws_client_msg_stop_parses() {
         let parsed: WsClientMsg = serde_json::from_str(r#"{"type":"stop"}"#).unwrap();
         assert!(matches!(parsed, WsClientMsg::Stop));
+    }
+
+    #[test]
+    fn ws_client_msg_answer_question_parses() {
+        // Locks the wire shape that the frontend sends for the
+        // ask_user_question dialog. snake_case discriminator + question_id
+        // + answers map; if any of these names drift the dialog silently fails.
+        let raw = r#"{"type":"answer_question","question_id":"00000000-0000-0000-0000-000000000001","answers":{"Proceed?":"yes"}}"#;
+        let parsed: WsClientMsg = serde_json::from_str(raw).unwrap();
+        match parsed {
+            WsClientMsg::AnswerQuestion {
+                question_id,
+                answers,
+            } => {
+                assert_eq!(
+                    question_id,
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+                );
+                assert_eq!(
+                    answers.get("Proceed?").map(String::as_str),
+                    Some("yes")
+                );
+            }
+            _ => panic!("expected AnswerQuestion variant"),
+        }
     }
 
     #[test]

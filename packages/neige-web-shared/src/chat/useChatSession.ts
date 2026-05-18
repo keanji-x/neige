@@ -9,6 +9,7 @@
 //     {"type":"attach","last_seq":<number|null>}   // first frame
 //     {"type":"user_message","content":"…"}        // when user submits
 //     {"type":"stop"}                              // interrupt current turn
+//     {"type":"answer_question","question_id":"…","answers":{...}}
 //   Server → client text JSON:
 //     {"type":"hello","last_seq":<n>}              // attach ack
 //     {"seq":<n>,"event":<NeigeEvent>}             // every other frame
@@ -22,7 +23,7 @@ import {
   type ChatTimeline,
   type ToolResultsById,
 } from './derive';
-import type { NeigeEvent } from './types';
+import type { AnswerQuestionHandler, NeigeEvent, QuestionAnswers } from './types';
 
 export type ChatSessionStatus = 'connecting' | 'open' | 'closed' | 'reconnecting';
 
@@ -40,10 +41,17 @@ export interface UseChatSessionApi {
   status: ChatSessionStatus;
   /** True when the most recent assistant message hasn't yet emitted message_stop. */
   isGenerating: boolean;
-  /** Send a user message. No-op if WS not open. */
-  sendMessage: (content: string) => void;
-  /** Interrupt the current claude turn (server SIGINTs the subprocess). No-op if WS not open. */
+  /** Send a user message. Returns false if WS is not open. */
+  sendMessage: (content: string) => boolean;
+  /** Interrupt the current claude turn through the chat runner. No-op if WS not open. */
   stop: () => void;
+  /**
+   * Resolve a server-side `ask_question` self-ask dialog. Sends an
+   * `answer_question` WS frame; the server unblocks the awaiting MCP tool
+   * call. Returns false if WS is not open (the MCP call will keep waiting;
+   * the user can retry once reconnected).
+   */
+  answerQuestion: AnswerQuestionHandler;
 }
 
 const MAX_RECONNECT_DELAY = 10000;
@@ -193,7 +201,7 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       // TODO(queue): hold the message until the socket is open / reattaches.
-      return;
+      return false;
     }
     ws.send(JSON.stringify({ type: 'user_message', content }));
     // Optimistic local render. Claude only echoes the user turn back on
@@ -206,12 +214,20 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
       content: [{ type: 'text', text: content }],
     };
     setEvents((prev) => [...prev, optimistic]);
+    return true;
   }, []);
 
   const stop = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: 'stop' }));
+  }, []);
+
+  const answerQuestion = useCallback((questionId: string, answers: QuestionAnswers) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type: 'answer_question', question_id: questionId, answers }));
+    return true;
   }, []);
 
   const { timeline, toolResults } = useMemo(() => deriveTimeline(events), [events]);
@@ -226,5 +242,14 @@ export function useChatSession(opts: UseChatSessionOptions): UseChatSessionApi {
     return !last.isComplete;
   })();
 
-  return { events, timeline, toolResults, status, isGenerating, sendMessage, stop };
+  return {
+    events,
+    timeline,
+    toolResults,
+    status,
+    isGenerating,
+    sendMessage,
+    stop,
+    answerQuestion,
+  };
 }

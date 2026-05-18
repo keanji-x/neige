@@ -12,7 +12,7 @@ import {
   Text,
   TextField,
 } from '@radix-ui/themes';
-import type { CreateConvRequest, DirEntry, SessionMode } from '../types';
+import type { CreateConvRequest, DirEntry, SessionModeTag } from '../types';
 import { browseDir, isGitRepo } from '../api';
 import type { NeigeConfig, RecentCommand } from '../hooks/useConfig';
 
@@ -28,7 +28,7 @@ const PROGRAMS = ['claude', 'bash', 'zsh', 'python3', 'node'];
 
 export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }: CreateDialogProps) {
   const [title, setTitle] = useState('');
-  const [mode, setMode] = useState<SessionMode>('terminal');
+  const [mode, setMode] = useState<SessionModeTag>('terminal');
   const [program, setProgram] = useState('claude');
   const [customProgram, setCustomProgram] = useState('');
   const [cwd, setCwd] = useState('');
@@ -187,7 +187,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
     if (proxyVal !== (config.proxy || '')) {
       onConfigUpdate({ proxy: proxyVal || undefined });
     }
-    onCreate({
+    const baseReq = {
       title: effectiveTitle,
       program: effectiveProgram,
       cwd: trimmedCwd,
@@ -199,8 +199,16 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
         mode === 'terminal' && useWorktree && trimmedWorktreeName
           ? trimmedWorktreeName
           : undefined,
-      mode,
-    });
+    };
+    // Chat mode requires a unique addressing handle (`name`); the dialog
+    // doesn't yet expose a separate input for it, so seed it from the
+    // display title. Users can rename later via the conversation menu —
+    // a collision returns a 400 they can react to.
+    onCreate(
+      mode === 'chat'
+        ? { ...baseReq, mode: 'chat', name: effectiveTitle }
+        : { ...baseReq, mode: 'terminal' },
+    );
     onClose();
   };
 
@@ -273,7 +281,7 @@ export function CreateDialog({ open, onClose, onCreate, config, onConfigUpdate }
               <SegmentedControl.Root
                 value={mode}
                 onValueChange={(v) => {
-                  const next = (v as SessionMode) || 'terminal';
+                  const next = (v as SessionModeTag) || 'terminal';
                   setMode(next);
                   // Chat mode currently only supports the `claude` program,
                   // so snap the program field on switch. Field stays editable

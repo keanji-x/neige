@@ -4,16 +4,20 @@
 // decides what to do.
 
 import { useState, useRef } from 'react';
-import { Box, Flex, IconButton, TextArea } from '@radix-ui/themes';
+import { Box, Flex, IconButton, Text, TextArea } from '@radix-ui/themes';
 import { Send, Square } from 'lucide-react';
 
 interface ComposeBoxProps {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string) => boolean;
   /** When set + isGenerating is true, the right-hand button becomes a Stop. */
   onStop?: () => void;
   isGenerating?: boolean;
   placeholder?: string;
+  /** Hard-disable the input, e.g. for a read-only mount. */
   disabled?: boolean;
+  /** Block sending while keeping the draft editable. */
+  canSubmit?: boolean;
+  statusText?: string;
 }
 
 export function ComposeBox({
@@ -22,16 +26,20 @@ export function ComposeBox({
   isGenerating,
   placeholder,
   disabled,
+  canSubmit = true,
+  statusText,
 }: ComposeBoxProps) {
   const [value, setValue] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const sendBlocked = disabled || !canSubmit;
 
   const submit = () => {
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
-    onSubmit(trimmed);
-    setValue('');
-    taRef.current?.focus();
+    if (!trimmed || sendBlocked) return;
+    if (onSubmit(trimmed)) {
+      setValue('');
+      taRef.current?.focus();
+    }
   };
 
   return (
@@ -48,9 +56,9 @@ export function ComposeBox({
             ref={taRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholder ?? 'Send a message — Enter to submit, Shift+Enter for newline'}
+            placeholder={placeholder ?? 'Message Claude...'}
             size="2"
-            resize="vertical"
+            resize="none"
             disabled={disabled}
             onKeyDown={(e) => {
               // IME composition guard: Enter while a CJK candidate is open
@@ -67,8 +75,28 @@ export function ComposeBox({
                 submit();
               }
             }}
-            style={{ minHeight: 64 }}
+            style={{
+              minHeight: 76,
+              maxHeight: 180,
+              overflowY: 'auto',
+              lineHeight: 1.5,
+            }}
           />
+          <Flex justify="between" align="center" mt="1" gap="3">
+            <Text size="1" color="gray">
+              Enter to send · Shift+Enter for newline
+            </Text>
+            {statusText && (
+              <Text
+                size="1"
+                color={canSubmit ? 'gray' : 'amber'}
+                role="status"
+                aria-live="polite"
+              >
+                {statusText}
+              </Text>
+            )}
+          </Flex>
         </Box>
         {isGenerating && onStop ? (
           <IconButton
@@ -84,7 +112,7 @@ export function ComposeBox({
           <IconButton
             size="3"
             onClick={submit}
-            disabled={disabled || !value.trim()}
+            disabled={sendBlocked || !value.trim()}
             aria-label="Send message"
           >
             <Send size={16} />

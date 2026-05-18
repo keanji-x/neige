@@ -1,16 +1,17 @@
-//! Parser + mapper for Claude Code's `--output-format=stream-json` NDJSON.
+//! Source-agnostic event types consumed by the rest of neige.
 //!
-//! [`parse_line`] turns a single NDJSON line into a [`RawStreamJsonEvent`]
-//! that mirrors the wire shape (with an `Unknown` fallback for forward
-//! compatibility). [`to_neige_events`] then translates a raw event into zero
-//! or more [`NeigeEvent`]s, the stable internal contract that the rest of
-//! neige consumes regardless of which source produced the events
-//! (stream-json today, JSONL tail tomorrow).
+//! Historically this module also held a parser for Claude Code's
+//! `--output-format=stream-json` NDJSON. That parser is gone: chat-mode
+//! events are now produced by the Node sidecar runner
+//! (`runners/neige-chat-runner`) which uses
+//! `@anthropic-ai/claude-agent-sdk` and emits already-serialized
+//! [`NeigeEvent`] JSON on stdout — the daemon forwards lines opaquely.
+//!
+//! Only the unified event types remain, since [`NeigeEvent`] is also
+//! synthesized in-process by `neige-server` (e.g. for `Passthrough`
+//! envelopes from MCP tools), so the type contract is shared across the
+//! workspace.
 
-pub mod map;
-pub mod raw;
 pub mod unified;
 
-pub use map::to_neige_events;
-pub use raw::{ParseError, RawStreamJsonEvent, parse_line};
 pub use unified::{ContentBlock, McpServerInfo, NeigeEvent, PluginInfo, ToolResultContent};

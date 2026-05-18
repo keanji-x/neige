@@ -5,8 +5,8 @@
 import { useState } from 'react';
 import { Box, Button, Card, Flex, IconButton, Text, TextArea } from '@radix-ui/themes';
 import { Pencil } from 'lucide-react';
-import type { AssistantBlock, ChatMessage, ToolResultsById } from '../derive';
-import type { ContentBlock } from '../types';
+import type { AssistantBlock, ChatMessage, ChatTimeline, ToolResultsById } from '../derive';
+import type { AnswerQuestionHandler, ContentBlock } from '../types';
 import { TextBlock } from './TextBlock';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolUseBlock } from './ToolUseBlock';
@@ -14,13 +14,20 @@ import { ToolUseBlock } from './ToolUseBlock';
 interface MessageBubbleProps {
   message: ChatMessage;
   toolResults: ToolResultsById;
-  respond: (text: string) => void;
+  respond: (text: string) => boolean | void;
   /**
    * If true and the message is a user turn, show a pencil that flips the
    * bubble into an inline edit field. Submit calls respond() with the new
    * text — i.e. it's resend-as-follow-up, not a history rewrite.
    */
   canEdit?: boolean;
+  /** Sub-agent timelines from the enclosing ChatTimeline. ToolUseBlock looks
+   *  up its own entry by tool_use_id and forwards it to the matching
+   *  renderer (TaskToolCard uses it; others ignore it). */
+  subagents?: Record<string, ChatTimeline>;
+  /** Forwarded so AskUserQuestion-style cards inside sub-agent timelines
+   *  can still post answers back. */
+  onAnswerQuestion?: AnswerQuestionHandler;
 }
 
 export function MessageBubble({
@@ -28,6 +35,8 @@ export function MessageBubble({
   toolResults,
   respond,
   canEdit,
+  subagents,
+  onAnswerQuestion,
 }: MessageBubbleProps) {
   if (message.role === 'user') {
     return <UserBubble blocks={message.blocks} canEdit={canEdit} respond={respond} />;
@@ -38,6 +47,8 @@ export function MessageBubble({
       toolResults={toolResults}
       isComplete={message.isComplete}
       respond={respond}
+      subagents={subagents}
+      onAnswerQuestion={onAnswerQuestion}
     />
   );
 }
@@ -49,7 +60,7 @@ function UserBubble({
 }: {
   blocks: ContentBlock[];
   canEdit?: boolean;
-  respond: (text: string) => void;
+  respond: (text: string) => boolean | void;
 }) {
   const text = blocks
     .map((b) => {
@@ -70,8 +81,9 @@ function UserBubble({
   const onSave = () => {
     const trimmed = draft.trim();
     if (!trimmed) return;
-    respond(trimmed);
-    setEditing(false);
+    if (respond(trimmed) !== false) {
+      setEditing(false);
+    }
   };
   const onCancel = () => setEditing(false);
 
@@ -106,7 +118,7 @@ function UserBubble({
               Cancel
             </Button>
             <Button size="1" onClick={onSave} disabled={!draft.trim()}>
-              Send edit
+              Send as new message
             </Button>
           </Flex>
         </Box>
@@ -155,11 +167,15 @@ function AssistantTurn({
   toolResults,
   isComplete,
   respond,
+  subagents,
+  onAnswerQuestion,
 }: {
   blocks: AssistantBlock[];
   toolResults: ToolResultsById;
   isComplete: boolean;
   respond: (text: string) => void;
+  subagents?: Record<string, ChatTimeline>;
+  onAnswerQuestion?: AnswerQuestionHandler;
 }) {
   return (
     <Box mb="4">
@@ -191,6 +207,10 @@ function AssistantTurn({
                   isStreaming={block.isStreaming}
                   result={toolResults[block.toolUseId]}
                   respond={respond}
+                  toolUseId={block.toolUseId}
+                  subagents={subagents}
+                  toolResults={toolResults}
+                  onAnswerQuestion={onAnswerQuestion}
                 />
               );
             case 'unknown':
