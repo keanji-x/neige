@@ -98,6 +98,34 @@ export function CalmApp() {
     [k, route],
   );
 
+  /**
+   * Today's "+ Quick terminal" CTA. Spins up a scratch wave (and a scratch
+   * cove if the DB is empty), adds a terminal card, and navigates into it.
+   * One click → live PTY. Falls back to a console warn if any step fails.
+   */
+  const quickTerminal = useCallback(async () => {
+    try {
+      let coveId = k.coves[0]?.id;
+      if (!coveId) {
+        const cove = await k.createCove('Scratch', '#6a8');
+        coveId = cove.id;
+      }
+      const title =
+        'Scratch — ' +
+        new Date().toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      const wave = await k.createWave(coveId, title);
+      // Don't await terminal creation before navigating — let the WS event
+      // fold the card in once the kernel finishes. Navigation feels instant.
+      void k.createTerminalCard(wave.id);
+      go({ name: 'wave', id: wave.id });
+    } catch (err) {
+      console.warn('[Calm] quick terminal failed:', err);
+    }
+  }, [k, go]);
+
   const moveCardTo = useCallback(
     async (_waveId: string, from: number, to: number) => {
       if (from === to) return;
@@ -138,7 +166,14 @@ export function CalmApp() {
       return <LoadingShell />;
     }
     if (route.name === 'today') {
-      return <TodayPage waves={waves} coves={coves} onGo={go} />;
+      return (
+        <TodayPage
+          waves={waves}
+          coves={coves}
+          onGo={go}
+          onQuickTerminal={quickTerminal}
+        />
+      );
     }
     if (route.name === 'cove') {
       const cove = findCove(route.coveId);

@@ -402,59 +402,39 @@ export function Sidebar({
   );
 }
 
-// ---------------- NewCove / NewWave inline forms ----------------
+// ---------------- NewCove / NewWave bootstrap buttons ----------------
+//
+// Native `prompt()` for now — a real picker (color swatches, validation,
+// inline editing) lands when the plugin host is in place and we have a
+// proper "command palette" UX to put them in. These are the *bootstrap*
+// affordances: they exist so a fresh DB can be populated without curl.
 
-const SWATCH_COLORS = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
+const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
 function NewCoveButton({
   onCreate,
 }: {
   onCreate: (name: string, color: string) => void | Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [color, setColor] = useState(SWATCH_COLORS[0]);
-  if (!open) {
-    return (
-      <button className="cove-nav new" onClick={() => setOpen(true)} title="New cove">
-        <span className="swatch-wrap"><span className="swatch ghost">+</span></span>
-        <span className="lbl">New cove</span>
-      </button>
-    );
-  }
-  const submit = async () => {
-    const n = name.trim();
-    if (!n) return;
-    await onCreate(n, color);
-    setName('');
-    setOpen(false);
+  const handle = async () => {
+    const name = window.prompt('New cove name?');
+    if (!name || !name.trim()) return;
+    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    await onCreate(name.trim(), color);
   };
   return (
-    <div className="cove-nav new editing">
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
-        <select
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          style={{ background: color, width: 24, height: 24, borderRadius: 6, border: 'none' }}
-          aria-label="cove color"
-        >
-          {SWATCH_COLORS.map((c) => (
-            <option key={c} value={c} style={{ background: c }}>{c}</option>
-          ))}
-        </select>
-        <input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Cove name"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void submit();
-            if (e.key === 'Escape') setOpen(false);
+    <button className="cove-nav" onClick={handle} title="New cove">
+      <span className="swatch-wrap">
+        <span
+          className="swatch"
+          style={{
+            background: 'transparent',
+            border: '1px dashed var(--text-3, #999)',
           }}
-          style={{ flex: 1, minWidth: 0, font: 'inherit' }}
         />
-      </div>
-    </div>
+      </span>
+      <span className="lbl">+ New cove</span>
+    </button>
   );
 }
 
@@ -465,37 +445,24 @@ function NewWaveButton({
   coveId: string;
   onCreate: (coveId: string, title: string) => void | Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  if (!open) {
-    return (
-      <button className="cove-nav new" onClick={() => setOpen(true)} title="New wave">
-        <span className="swatch-wrap"><span className="swatch ghost">+</span></span>
-        <span className="lbl">New wave</span>
-      </button>
-    );
-  }
-  const submit = async () => {
-    const t = title.trim();
-    if (!t) return;
-    await onCreate(coveId, t);
-    setTitle('');
-    setOpen(false);
+  const handle = async () => {
+    const title = window.prompt('New wave title?');
+    if (!title || !title.trim()) return;
+    await onCreate(coveId, title.trim());
   };
   return (
-    <div className="cove-nav new editing">
-      <input
-        autoFocus
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="Wave title"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') void submit();
-          if (e.key === 'Escape') setOpen(false);
-        }}
-        style={{ width: '100%', font: 'inherit' }}
-      />
-    </div>
+    <button className="cove-nav" onClick={handle} title="New wave">
+      <span className="swatch-wrap">
+        <span
+          className="swatch"
+          style={{
+            background: 'transparent',
+            border: '1px dashed var(--text-3, #999)',
+          }}
+        />
+      </span>
+      <span className="lbl">+ New wave</span>
+    </button>
   );
 }
 

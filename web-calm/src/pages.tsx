@@ -61,15 +61,6 @@ const fmtHour = (h: number) => {
   const hh = (h + 11) % 12 + 1;
   return hh + p;
 };
-const fmtClock = (d: Date) =>
-  d.toLocaleTimeString('en-US', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-const fmtLogin = (d: Date) =>
-  d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
-  ' ' +
-  fmtClock(d);
-
 interface CalEvent { wave: Wave; date: Date; h: number; dur: number; }
 
 // ============================================================
@@ -82,10 +73,15 @@ export function TodayPage({
   waves,
   coves,
   onGo,
+  onQuickTerminal,
 }: {
   waves: Wave[];
   coves: Cove[];
   onGo: (r: Route) => void;
+  /** Bootstrap: create a scratch wave (and cove, if none exist) with a live
+   *  terminal card, then navigate into it. Optional — TodayPage degrades
+   *  gracefully if not supplied (button hidden). */
+  onQuickTerminal?: () => Promise<void> | void;
 }) {
   const today0 = useMemo(() => {
     const t = new Date();
@@ -107,7 +103,11 @@ export function TodayPage({
     <div className="surf">
       <section className="surf-main">
         <SurfClock waves={waves} />
-        <SurfTerminal />
+        <TodayCommand
+          waves={waves}
+          onGo={onGo}
+          onQuickTerminal={onQuickTerminal}
+        />
       </section>
       <aside className="surf-rail">
         <CalendarCard
@@ -118,6 +118,97 @@ export function TodayPage({
           onGo={onGo}
         />
       </aside>
+    </div>
+  );
+}
+
+// ---------------- TodayCommand — replaces the design's static SurfTerminal ----------------
+//
+// Now that terminals live in waves (one PTY per terminal card), having a
+// fake terminal on Today made no sense. This panel surfaces the real
+// equivalents: a one-click scratch-terminal launcher and quick links into
+// recent waves.
+//
+// Mounting a live `<XtermView>` directly on Today is intentionally not done
+// — that would require deciding *which* terminal it should host (most
+// recent? sticky? user-chosen?). The launcher button is the honest answer:
+// one click, you get a wave with a live PTY, you're in.
+
+function TodayCommand({
+  waves,
+  onGo,
+  onQuickTerminal,
+}: {
+  waves: Wave[];
+  onGo: (r: Route) => void;
+  onQuickTerminal?: () => Promise<void> | void;
+}) {
+  const recentWaves = waves.slice(0, 8);
+  const noWaves = waves.length === 0;
+
+  return (
+    <div className="surf-term">
+      <div className="surf-term-head">
+        <span className="term-dot" />
+        <span className="term-dot b" />
+        <span className="term-dot c" />
+        <span className="term-title">~ / neige · today</span>
+        <span className="surf-term-host">yuki@neige</span>
+      </div>
+      <div className="surf-term-body">
+        {onQuickTerminal && (
+          <div className="surf-term-line">
+            <button
+              className="go"
+              onClick={() => void onQuickTerminal()}
+              style={{
+                font: 'inherit',
+                padding: '6px 12px',
+                borderRadius: 6,
+                cursor: 'pointer',
+              }}
+            >
+              + Quick terminal
+            </button>
+            <span className="dim" style={{ marginLeft: 12 }}>
+              spawn a scratch wave with a live PTY
+            </span>
+          </div>
+        )}
+        <div className="surf-term-gap" />
+        {noWaves ? (
+          <div className="surf-term-line dim">
+            no waves yet — create a cove and a wave from the sidebar, or hit
+            “Quick terminal” above.
+          </div>
+        ) : (
+          <>
+            <div className="surf-term-line dim">recent waves:</div>
+            {recentWaves.map((w) => (
+              <div key={w.id} className="surf-term-line">
+                <button
+                  className="surf-cmd"
+                  onClick={() => onGo({ name: 'wave', id: w.id })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    font: 'inherit',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                  title={`Open ${w.title}`}
+                >
+                  {w.title}
+                </button>
+                <span className="dim" style={{ marginLeft: 10 }}>
+                  {w.status === 'running' ? 'running' : 'waiting'} · {w.now}
+                </span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -169,59 +260,6 @@ function SurfClock({ waves }: { waves: Wave[] }) {
         </span>
       </div>
     </header>
-  );
-}
-
-// ---------------- Terminal (plain) ----------------
-
-function SurfTerminal() {
-  const loginLine = useMemo(() => {
-    const now = new Date();
-    const start = new Date(now.getTime() - (18 * 60 + 47) * 1000);
-    return 'Last login: ' + fmtLogin(start) + ' on ttys001';
-  }, []);
-
-  return (
-    <div className="surf-term">
-      <div className="surf-term-head">
-        <span className="term-dot" />
-        <span className="term-dot b" />
-        <span className="term-dot c" />
-        <span className="term-title">~ / neige · today</span>
-        <span className="surf-term-host">yuki@neige</span>
-      </div>
-      <div className="surf-term-body">
-        <div className="surf-term-line dim">{loginLine}</div>
-        <div className="surf-term-line">
-          <strong>neige · today</strong>  v0.4.2
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-term-line dim">launch a TUI on a scheduled wave:</div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige claude</span>  <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">claude code</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige cursor</span>  <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">cursor agent</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige aider</span>   <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">aider</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige run </span>    <span className="surf-arg">--now</span>        <span className="dim">pick up today's next block</span>
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-term-line dim">
-          active sessions: <span className="surf-live">2</span>  ·  atlas, reef
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-prompt">
-          <span className="surf-host">yuki@neige</span>
-          <span className="surf-tilde">~</span>
-          <span className="surf-ps">$</span>
-          <span className="surf-cursor" />
-        </div>
-      </div>
-    </div>
   );
 }
 
