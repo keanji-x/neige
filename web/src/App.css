@@ -702,6 +702,139 @@
   color: #fff;
 }
 
+/* Task panel */
+.task-panel {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-add {
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  gap: 6px;
+  align-items: center;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.task-row-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.task-row:hover {
+  background: var(--bg-hover);
+}
+
+.task-row.has-binding {
+  color: var(--text-primary);
+}
+
+.task-row.stale {
+  opacity: 0.7;
+}
+
+.task-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.task-row.has-binding .task-dot {
+  background: var(--blue);
+}
+
+.task-row.stale .task-dot {
+  background: var(--red);
+}
+
+.task-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.task-binding-label {
+  font-size: 10px;
+  color: var(--blue);
+  background: var(--blue-dim);
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-binding-label.muted {
+  color: var(--text-faint);
+  background: transparent;
+}
+
+.task-binding-label.stale {
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.task-remove {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+  border-radius: 3px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.task-remove:hover {
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.task-binding-picker {
+  padding: 2px 6px 4px;
+}
+
+.task-empty {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 6px 4px;
+  text-align: center;
+}
+
 .btn-copy {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);

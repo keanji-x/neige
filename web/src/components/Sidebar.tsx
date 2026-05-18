@@ -4,6 +4,8 @@ import { Button } from '@neige/shared';
 import type { ConvInfo } from '../types';
 import { PortForwardPanel } from './PortForwardPanel';
 import type { PortForward } from './PortForwardPanel';
+import { TaskPanel } from './TaskPanel';
+import type { Task } from './TaskPanel';
 import { useBusyTerminalIds } from '../hooks/terminalBusy';
 
 export type { PortForward };
@@ -32,6 +34,8 @@ interface SidebarProps {
   onNew: () => void;
   portForwards: PortForward[];
   onPortForwardUpdate: (ports: PortForward[]) => void;
+  tasks: Task[];
+  onTasksUpdate: (tasks: Task[]) => void;
 }
 
 const COLLAPSED_WIDTH = 48;
@@ -113,6 +117,8 @@ export function Sidebar({
   onNew,
   portForwards,
   onPortForwardUpdate,
+  tasks,
+  onTasksUpdate,
 }: SidebarProps) {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH);
   const [collapsed, setCollapsed] = useState(false);
@@ -346,6 +352,12 @@ export function Sidebar({
               </>
             )}
           </div>
+          <TaskPanel
+            tasks={tasks}
+            conversations={conversations}
+            onUpdate={onTasksUpdate}
+            onJump={onSelect}
+          />
           <PortForwardPanel
             ports={portForwards}
             onUpdate={onPortForwardUpdate}
