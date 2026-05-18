@@ -236,6 +236,10 @@ function App() {
         onPortForwardUpdate={(ports) => {
           updateConfig({ portForwards: ports });
         }}
+        tasks={config.tasks || []}
+        onTasksUpdate={(tasks) => {
+          updateConfig({ tasks });
+        }}
       />
       <main className="main">
         <TerminalPanel
