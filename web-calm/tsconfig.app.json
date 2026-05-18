@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "types": ["vite/client"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* Shared package — narrow subpath imports from packages/neige-web-shared
+       so we only pull in what we use (no Radix / marked / chat). baseUrl
+       + ignoreDeprecations mirrors web/'s setup. */
+    "baseUrl": ".",
+    "paths": {
+      "@neige/shared/*": ["../packages/neige-web-shared/src/*"]
+    },
+    "ignoreDeprecations": "6.0"
+  },
+  "include": ["src", "../packages/neige-web-shared/src/useTerminalCore.ts", "../packages/neige-web-shared/src/api.ts", "../packages/neige-web-shared/src/types.ts"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
+}
