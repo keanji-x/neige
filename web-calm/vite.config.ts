@@ -23,11 +23,10 @@ export default defineConfig({
   server: {
     port: 5175,
     proxy: {
-      // Calm-only neige-server, isolated auth file (/tmp/calm-auth.toml).
-      // Avoids stepping on the shared 3131 dev instance you use from web/.
-      '/api':   { target: 'http://localhost:3232', changeOrigin: true },
-      '/login': { target: 'http://localhost:3232', changeOrigin: true },
-      '/ws':    { target: 'ws://localhost:3232',   changeOrigin: true, ws: true },
+      // calm-server (new kernel) on :4040 owns /api and its WS endpoints
+      // (/api/events, /api/terminals/:id). The old neige-server stays put
+      // on :3030/:3232; the swap is purely client-side.
+      '/api': { target: 'http://localhost:4040', changeOrigin: true, ws: true },
     },
   },
 })

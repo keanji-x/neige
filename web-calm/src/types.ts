@@ -1,7 +1,15 @@
 // Calm UI types — Cove (project) / Wave (task) / Today (home).
 // Mirrors the design's seed data shape; renamed Sea → Cove.
 
-export type WaveStatus = 'running' | 'waiting';
+/**
+ * Wave status — kernel itself stores no status; plugins write it via overlays.
+ * - `idle`    : no plugin has set status (the default). Visually calm.
+ * - `waiting` : an overlay explicitly says the wave is waiting on the user.
+ *               Only this surfaces in the sidebar's "Waiting on you" group.
+ * - `running` : an overlay explicitly says work is in flight (renders the
+ *               progress bar + pulse).
+ */
+export type WaveStatus = 'idle' | 'running' | 'waiting';
 
 export interface Cove {
   id: string;
@@ -31,9 +39,10 @@ export interface TerminalCardData {
   type: 'terminal';
   title: string;
   lines: TermLine[];
-  // Optional pointer at a real Neige conversation. When set, the card hosts
-  // a live xterm/PTY instead of rendering the static `lines`.
-  convId?: string;
+  // Optional pointer at a kernel Terminal row (calm-server's
+  // `Terminal.id`). When set, the card hosts a live xterm/PTY rather than
+  // rendering the static `lines`.
+  terminalId?: string;
 }
 
 export interface DocCardData {

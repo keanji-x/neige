@@ -1,46 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
-import { createConversation, listConversations } from '@neige/shared/api';
-// listConversations is still used by the demo auto-bind below.
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
 import { Sidebar, TitleBar } from './ui';
 import { CovePage, TodayPage, WavePage } from './pages';
-import { coves as seedCoves, waves as seedWaves } from './data';
-import type { Route, Wave, WaveCardData } from './types';
+import { adaptCard, adaptCove, adaptWave } from './api/adapt';
+import { useKernel } from './hooks/useKernel';
+import { useTodayTerminal } from './hooks/useTodayTerminal';
+import type { Cove, Route, Wave, WaveCardData } from './types';
 import type { AddPanelKind } from './ui';
-
-// Fold seeded `wave.plan` into `wave.cards` (plan becomes a regular card),
-// mirroring the design's seedWaves() in app.jsx.
-function withFoldedPlans(waves: Wave[]): Wave[] {
-  return waves.map((w) => {
-    if (!w.plan || w.plan.length === 0) {
-      return { ...w, plan: undefined };
-    }
-    return {
-      ...w,
-      plan: undefined,
-      cards: [...(w.cards || []), { type: 'plan', steps: w.plan }],
-    };
-  });
-}
-
-function newCard(type: AddPanelKind): WaveCardData | null {
-  if (type === 'terminal')
-    return {
-      type: 'terminal',
-      title: 'new terminal',
-      lines: [{ kind: 'log', text: 'empty session — panel ready.' }],
-    };
-  if (type === 'doc') return { type: 'doc', title: 'New note', body: 'Start typing…' };
-  if (type === 'plan') return { type: 'plan', steps: [{ label: 'Add a step…', cur: true }] };
-  return null;
-}
 
 export function CalmApp() {
   const [route, setRoute] = useState<Route>({ name: 'today' });
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [waves, setWaves] = useState<Wave[]>(() => withFoldedPlans(seedWaves));
 
-  const coves = seedCoves;
+  const k = useKernel();
+  const todayTerm = useTodayTerminal();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -49,116 +22,134 @@ export function CalmApp() {
     };
   }, [theme]);
 
-  // Demo wire: on mount, fetch real conversations from neige-server and bind
-  // the first non-dead one to w-001's first terminal card. Proves the Calm
-  // terminal card can host a live PTY without redesigning the data flow.
-  // Falls back silently to mock lines if the server is unreachable.
-  useEffect(() => {
-    let cancelled = false;
-    listConversations()
-      .then((cs) => {
-        if (cancelled) return;
-        const live = cs.find((c) => c.status !== 'dead');
-        if (!live) return;
-        setWaves((ws) =>
-          ws.map((w) => {
-            if (w.id !== 'w-001') return w;
-            return {
-              ...w,
-              cards: (w.cards || []).map((c, i) =>
-                i === 0 && c.type === 'terminal' ? { ...c, convId: live.id } : c,
-              ),
-            };
-          }),
-        );
-      })
-      .catch(() => { /* server not running — stay on mock */ });
-    return () => { cancelled = true; };
-  }, []);
-
-  const findWave = (id: string) => waves.find((w) => w.id === id) || null;
-  const findCove = (id: string) => coves.find((c) => c.id === id) || null;
-
   const go = useCallback((r: Route) => setRoute(r), []);
 
-  const addCard = useCallback(async (waveId: string, type: AddPanelKind) => {
-    // Non-terminal cards stay client-side mock for now (doc / plan have no
-    // backend storage yet — they'll arrive with the MCP plugin layer).
-    if (type !== 'terminal') {
-      const c = newCard(type);
-      if (!c) return;
-      setWaves((ws) =>
-        ws.map((w) => (w.id === waveId ? { ...w, cards: [...(w.cards || []), c] } : w)),
-      );
-      return;
+  // ----- Derived UI shapes ------------------------------------------------
+
+  const coves: Cove[] = useMemo(() => k.coves.map(adaptCove), [k.coves]);
+
+  /**
+   * UI `Wave[]` built from the flat per-cove fetches. `WavePage` only needs
+   * fully-loaded cards when the user navigates into a wave; for the sidebar
+   * and TodayPage we just need the kernel wave shape adapted with default
+   * status/progress (overlays fold in once `wave_detail` is fetched).
+   */
+  const waves: Wave[] = useMemo(() => {
+    const out: Wave[] = [];
+    for (const list of k.wavesByCove.values()) {
+      for (const w of list) {
+        // If we have detail loaded, use its overlays. Otherwise defaults.
+        const detail = k.waveDetails.get(w.id);
+        out.push(adaptWave(w, detail?.overlays ?? []));
+      }
     }
+    return out;
+  }, [k.wavesByCove, k.waveDetails]);
 
-    // Terminal cards spin up a real conversation. Server takes empty cwd +
-    // program as "use $HOME / $SHELL" — a clean new shell, not inherited
-    // from any other conv. Falls back to a mock card if the server is down.
-    try {
-      const created = await createConversation({
-        title: 'new terminal',
-        program: '',
-        cwd: '',
-        use_worktree: false,
-      });
-      setWaves((ws) =>
-        ws.map((w) =>
-          w.id === waveId
-            ? {
-                ...w,
-                cards: [
-                  ...(w.cards || []),
-                  {
-                    type: 'terminal',
-                    title: 'new terminal',
-                    lines: [],
-                    convId: created.id,
-                  },
-                ],
-              }
-            : w,
-        ),
-      );
-    } catch (err) {
-      console.warn('[Calm] terminal create fell back to mock:', err);
-      const c = newCard('terminal');
-      if (!c) return;
-      setWaves((ws) =>
-        ws.map((w) => (w.id === waveId ? { ...w, cards: [...(w.cards || []), c] } : w)),
-      );
+  // For the currently-routed wave, fetch detail on demand and produce the
+  // UI shape (with cards from detail).
+  const currentWave: Wave | null = useMemo(() => {
+    if (route.name !== 'wave') return null;
+    const detail = k.waveDetails.get(route.id);
+    if (!detail) return null;
+    const uiWave = adaptWave(detail.wave, detail.overlays);
+    uiWave.cards = detail.cards
+      .map(adaptCard)
+      .filter((c): c is WaveCardData => c !== null);
+    return uiWave;
+  }, [route, k.waveDetails]);
+
+  // Trigger wave_detail fetch when route lands on an unloaded wave.
+  useEffect(() => {
+    if (route.name === 'wave' && !k.waveDetails.has(route.id)) {
+      void k.refetchWaveDetail(route.id);
     }
-  }, []);
+  }, [route, k]);
 
-  const removeCard = useCallback((waveId: string, idx: number) => {
-    setWaves((ws) =>
-      ws.map((w) =>
-        w.id === waveId
-          ? { ...w, cards: (w.cards || []).filter((_, i) => i !== idx) }
-          : w,
-      ),
-    );
-  }, []);
+  // ----- Actions ----------------------------------------------------------
 
-  const moveCardTo = useCallback((waveId: string, from: number, to: number) => {
-    if (from === to) return;
-    setWaves((ws) =>
-      ws.map((w) => {
-        if (w.id !== waveId) return w;
-        const cards = (w.cards || []).slice();
-        if (from < 0 || from >= cards.length) return w;
-        const [moved] = cards.splice(from, 1);
-        const insertAt = Math.max(0, Math.min(cards.length, to));
-        cards.splice(insertAt, 0, moved);
-        return { ...w, cards };
-      }),
-    );
-  }, []);
+  const addCard = useCallback(
+    async (waveId: string, type: AddPanelKind) => {
+      if (type === 'terminal') {
+        try {
+          await k.createTerminalCard(waveId);
+        } catch (err) {
+          console.warn('[Calm] terminal create failed:', err);
+        }
+        return;
+      }
+      // doc / plan cards land in M3 with the plugin host. For now noop.
+      console.warn(`[Calm] card kind '${type}' not yet wired to the kernel`);
+    },
+    [k],
+  );
+
+  const removeCard = useCallback(
+    async (_waveId: string, idx: number) => {
+      if (route.name !== 'wave') return;
+      const detail = k.waveDetails.get(route.id);
+      if (!detail) return;
+      const targetCardKernel = detail.cards[idx];
+      if (!targetCardKernel) return;
+      try {
+        await k.deleteCard(targetCardKernel.id);
+      } catch (err) {
+        console.warn('[Calm] card delete failed:', err);
+      }
+    },
+    [k, route],
+  );
+
+  const moveCardTo = useCallback(
+    async (_waveId: string, from: number, to: number) => {
+      if (from === to) return;
+      if (route.name !== 'wave') return;
+      const detail = k.waveDetails.get(route.id);
+      if (!detail) return;
+      // Compute new sort: midpoint between neighbors after the move.
+      const cards = detail.cards;
+      const moving = cards[from];
+      if (!moving) return;
+      // Build the slot list as if the move had happened, but with original
+      // sort values; pick the target's neighbors there.
+      const reordered = cards.slice();
+      const [m] = reordered.splice(from, 1);
+      reordered.splice(to, 0, m);
+      const before = reordered[to - 1];
+      const after = reordered[to + 1];
+      let newSort: number;
+      if (!before && after) newSort = after.sort - 1;
+      else if (before && !after) newSort = before.sort + 1;
+      else if (before && after) newSort = (before.sort + after.sort) / 2;
+      else newSort = 1;
+      try {
+        await k.setCardSort(moving.id, newSort);
+      } catch (err) {
+        console.warn('[Calm] card reorder failed:', err);
+      }
+    },
+    [k, route],
+  );
+
+  // ----- Render -----------------------------------------------------------
+
+  const findCove = (id: string) => coves.find((c) => c.id === id) || null;
 
   const renderPage = () => {
+    if (k.loading) {
+      return <LoadingShell />;
+    }
     if (route.name === 'today') {
-      return <TodayPage waves={waves} coves={coves} onGo={go} />;
+      return (
+        <TodayPage
+          waves={waves}
+          coves={coves}
+          onGo={go}
+          todayTerminalId={todayTerm.today?.terminalId ?? null}
+          todayError={todayTerm.error}
+          onResetTodayTerminal={todayTerm.reset}
+        />
+      );
     }
     if (route.name === 'cove') {
       const cove = findCove(route.coveId);
@@ -168,11 +159,45 @@ export function CalmApp() {
           cove={cove}
           waves={waves.filter((w) => w.coveId === cove.id)}
           onGo={go}
+          onCreateWave={async (coveId, title) => {
+            const w = await k.createWave(coveId, title);
+            go({ name: 'wave', id: w.id });
+          }}
+          onRenameCove={async (coveId, name) => {
+            try {
+              await k.renameCove(coveId, name);
+            } catch (err) {
+              console.warn('[Calm] cove rename failed:', err);
+            }
+          }}
+          onDeleteCove={async (coveId) => {
+            try {
+              await k.deleteCove(coveId);
+              // Kernel cascades the cove's waves+cards; the WS event will
+              // purge sidebar state. Bounce back to Today so we don't
+              // render a stale CovePage for the now-gone cove.
+              go({ name: 'today' });
+            } catch (err) {
+              console.warn('[Calm] cove delete failed:', err);
+            }
+          }}
+          onDeleteWave={async (waveId) => {
+            try {
+              await k.deleteWave(waveId);
+              // We stay on the CovePage — the WS `wave.deleted` event
+              // will remove the row from the list.
+            } catch (err) {
+              console.warn('[Calm] wave delete failed:', err);
+            }
+          }}
         />
       );
     }
     if (route.name === 'wave') {
-      const wave = findWave(route.id);
+      // Use the detail-derived wave if present; otherwise fall back to the
+      // flat row from wavesByCove. The fallback won't have cards but the
+      // wave-detail fetch is in flight from the effect above.
+      const wave = currentWave ?? waves.find((w) => w.id === route.id) ?? null;
       if (!wave) return <Missing label="Wave" onGo={go} />;
       const cove = findCove(wave.coveId);
       if (!cove) return <Missing label="Cove" onGo={go} />;
@@ -184,6 +209,23 @@ export function CalmApp() {
           onAddCard={addCard}
           onRemoveCard={removeCard}
           onMoveCard={moveCardTo}
+          onRenameWave={async (waveId, title) => {
+            try {
+              await k.renameWave(waveId, title);
+            } catch (err) {
+              console.warn('[Calm] wave rename failed:', err);
+            }
+          }}
+          onDeleteWave={async (waveId) => {
+            try {
+              await k.deleteWave(waveId);
+              // Cascade: kernel removes the wave's cards. Bounce up to
+              // the parent cove since the WavePage just disappeared.
+              go({ name: 'cove', coveId: cove.id });
+            } catch (err) {
+              console.warn('[Calm] wave delete failed:', err);
+            }
+          }}
         />
       );
     }
@@ -197,11 +239,40 @@ export function CalmApp() {
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
       />
       <div className="stage">
-        <Sidebar coves={coves} waves={waves} route={route} onGo={go} />
+        <Sidebar
+          coves={coves}
+          waves={waves}
+          route={route}
+          onGo={go}
+          onCreateCove={async (name, color) => {
+            await k.createCove(name, color);
+          }}
+        />
         <main className="page">
-          <div className="scroll">{renderPage()}</div>
+          <div className="scroll">
+            {k.error && <ErrorBanner err={k.error} />}
+            {renderPage()}
+          </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+function LoadingShell() {
+  return (
+    <div className="col">
+      <p className="synth">Connecting to calm-server…</p>
+    </div>
+  );
+}
+
+function ErrorBanner({ err }: { err: Error }) {
+  return (
+    <div className="col" style={{ color: 'var(--warn, #c00)', marginBottom: 12 }}>
+      <p className="synth">
+        Kernel error: {err.message}. The page reflects the last successful read.
+      </p>
     </div>
   );
 }

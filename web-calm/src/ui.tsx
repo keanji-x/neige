@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { XtermView } from './XtermView';
 import type {
@@ -102,6 +102,7 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
   return (
     <span className="glyph">
       {status === 'running' ? (
+        // Live pulse — accent color.
         <span
           className="live-dot"
           style={{
@@ -112,7 +113,9 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
             display: 'block',
           }}
         />
-      ) : (
+      ) : status === 'waiting' ? (
+        // Needs-you halo — warn color with soft glow. Used only when a
+        // plugin explicitly says the wave is blocked on the user.
         <span
           style={{
             width: 8,
@@ -121,6 +124,18 @@ export function WaveGlyph({ status }: { status: WaveStatus }) {
             background: 'var(--warn)',
             display: 'block',
             boxShadow: '0 0 0 4px var(--warn-soft)',
+          }}
+        />
+      ) : (
+        // Idle — no overlay yet. Small dim dot, no halo. Calm.
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'var(--text-3, oklch(60% 0.005 245))',
+            opacity: 0.55,
+            display: 'block',
           }}
         />
       )}
@@ -135,45 +150,89 @@ export function WaveRow({
   cove,
   showCove = true,
   onClick,
+  onDelete,
 }: {
   wave: Wave;
   cove?: Cove;
   showCove?: boolean;
   onClick?: () => void;
+  /** Optional per-row delete. When supplied, a × button reveals on hover
+   *  on the right of the row. Caller is responsible for its own confirm
+   *  dialog (so the row delete and header delete read identically). */
+  onDelete?: () => void;
 }) {
+  // Avoid the "double-bullet" effect: only emit the `·` separator when both
+  // a cove tag AND a `now` line are going to render. Empty `now` (i.e. no
+  // plugin posted activity text) drops out cleanly.
+  const showCoveTag = showCove && !!cove;
+  const showNow = !!wave.now;
+  const showEta = !!wave.eta;
+  const showProgress = wave.status === 'running' && wave.progress > 0;
+
+  // The row used to be a real <button>, but adding a nested button for the
+  // hover-reveal delete is invalid HTML. So the row is a div with the
+  // navigation as a click+keydown handler, and the × is a real button
+  // child whose click stops propagation so it doesn't also navigate.
   return (
-    <button className="wave-row" onClick={onClick}>
+    <div
+      className="wave-row"
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (!onClick) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
       <WaveGlyph status={wave.status} />
       <div className="body">
         <div className="t">{wave.title}</div>
-        <div className="s">
-          {showCove && cove && (
-            <>
+        {(showCoveTag || showNow) && (
+          <div className="s">
+            {showCoveTag && (
               <span className="cove-tag">
-                <i style={{ background: cove.color }} />
-                {cove.name}
+                <i style={{ background: cove!.color }} />
+                {cove!.name}
               </span>
-              <span>·</span>
-            </>
-          )}
-          <span>{wave.now}</span>
-        </div>
-      </div>
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-end',
-          gap: 6,
-          minWidth: 110,
-        }}
-      >
-        {wave.status === 'running' && (
-          <ProgressBar value={wave.progress} status="running" />
+            )}
+            {showCoveTag && showNow && <span>·</span>}
+            {showNow && <span>{wave.now}</span>}
+          </div>
         )}
-        <span className="when">{wave.eta}</span>
       </div>
-    </button>
+      {(showProgress || showEta) && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 6,
+            minWidth: 110,
+          }}
+        >
+          {showProgress && (
+            <ProgressBar value={wave.progress} status="running" />
+          )}
+          {showEta && <span className="when">{wave.eta}</span>}
+        </div>
+      )}
+      {onDelete && (
+        <button
+          className="wave-row-delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          title={`Delete "${wave.title}"`}
+          aria-label={`Delete "${wave.title}"`}
+        >
+          ×
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -181,8 +240,8 @@ export function WaveRow({
 // WaveCard — dispatches on card type.
 // ============================================================
 
-function TerminalCard({ title, lines, convId }: TerminalCardData) {
-  const live = !!convId;
+function TerminalCard({ title, lines, terminalId }: TerminalCardData) {
+  const live = !!terminalId;
   return (
     <div className={'term' + (live ? ' live' : '')}>
       <div className="term-head">
@@ -196,7 +255,7 @@ function TerminalCard({ title, lines, convId }: TerminalCardData) {
       </div>
       <div className="term-body">
         {live ? (
-          <XtermView convId={convId!} />
+          <XtermView terminalId={terminalId!} />
         ) : (
           <>
             {lines.map((l, i) => (
@@ -318,11 +377,17 @@ export function Sidebar({
   waves,
   route,
   onGo,
+  onCreateCove,
 }: {
   coves: Cove[];
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
+  /** Bootstrap affordance: renders a small `+ New Cove` row below the
+   *  Coves list. Lives here (not in CovePage) because creating the *first*
+   *  cove has no other home. Wave creation, by contrast, lives inside
+   *  CovePage where the cove context is already established. */
+  onCreateCove?: (name: string, color: string) => void | Promise<void>;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   return (
@@ -375,9 +440,11 @@ export function Sidebar({
               {waiting > 0 && <span className="pip">{waiting}</span>}
             </span>
             <span className="lbl">{cove.name}</span>
+            {cw.length > 0 && <span className="count">{cw.length}</span>}
           </button>
         );
       })}
+      {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
 
       <span className="sp" />
       <div className="me-row">
@@ -391,37 +458,98 @@ export function Sidebar({
   );
 }
 
+// ---------------- NewCoveButton ----------------
+//
+// Lives in the sidebar because creating the *first* cove has no other home;
+// every subsequent affordance (new wave, new card) lives inside the page
+// it belongs to. Bootstraps a random color from a fixed palette — a real
+// color picker can land in a settings/command-palette pass later.
+
+const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
+
+function NewCoveButton({
+  onCreate,
+}: {
+  onCreate: (name: string, color: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // When the inline form opens, focus the input on the next tick so the
+  // ref is bound. Cheaper than a separate effect for one-shot focus.
+  const openForm = () => {
+    setOpen(true);
+    queueMicrotask(() => inputRef.current?.focus());
+  };
+  const close = () => {
+    setOpen(false);
+    setName('');
+  };
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      close();
+      return;
+    }
+    const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    await onCreate(trimmed, color);
+    close();
+  };
+
+  if (!open) {
+    return (
+      <button className="cove-nav new" onClick={openForm} title="New cove">
+        <span className="swatch-wrap">
+          <span className="swatch-plus">+</span>
+        </span>
+        <span className="lbl">New cove</span>
+      </button>
+    );
+  }
+  return (
+    <div className="cove-nav-edit">
+      <span className="swatch-wrap">
+        <span className="swatch-plus">+</span>
+      </span>
+      <input
+        ref={inputRef}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          else if (e.key === 'Escape') close();
+        }}
+        onBlur={() => void submit()}
+        placeholder="Name…"
+      />
+    </div>
+  );
+}
+
 // ---------------- AddPanel ----------------
 
 export type AddPanelKind = 'terminal' | 'doc' | 'plan';
 
 export function AddPanel({
   onAdd,
-  hasPlan,
 }: {
   onAdd: (type: AddPanelKind) => void;
-  hasPlan: boolean;
+  /** Carried for API stability; ignored while only `terminal` is wired. */
+  hasPlan?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  if (!open) {
-    return (
-      <button className="add-panel" onClick={() => setOpen(true)}>
-        + Add panel
-      </button>
-    );
-  }
-  const pick = (type: AddPanelKind) => {
-    onAdd(type);
-    setOpen(false);
-  };
+  // While the plugin host is still M3 work, only the built-in `terminal`
+  // card is actually wired end-to-end. Showing menu items for `doc` /
+  // `plan` would be a promise we can't keep, so the affordance collapses
+  // to a single direct-action button. When plugins land we'll restore the
+  // multi-option menu (driven by the manifest list rather than hard-coded).
   return (
-    <div className="add-panel-menu">
-      <button onClick={() => pick('terminal')}>New terminal</button>
-      <button onClick={() => pick('doc')}>New note</button>
-      {!hasPlan && <button onClick={() => pick('plan')}>New plan</button>}
-      <button className="cancel" onClick={() => setOpen(false)}>
-        cancel
-      </button>
-    </div>
+    <button
+      className="add-panel"
+      onClick={() => onAdd('terminal')}
+      title="New terminal"
+    >
+      + New terminal
+    </button>
   );
 }

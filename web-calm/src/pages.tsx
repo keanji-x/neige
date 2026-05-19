@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import {
   AddPanel,
@@ -11,27 +11,21 @@ import {
   type AddPanelKind,
 } from './ui';
 import type { Cove, Route, Wave } from './types';
+import { XtermView } from './XtermView';
 
 export { Sidebar };
 
 // ============================================================
-// Calendar helpers + synthetic schedule (mirrors design's pages.jsx).
-// `d` is days-from-today; `h` is the 24h start hour.
+// Calendar helpers.
+//
+// The mockup ported a synthetic `SURF_SCHEDULE` keyed on the design's
+// hand-written wave ids (`w-001` etc); under real kernel data those ids
+// never appear, so the calendar would be permanently empty. We instead
+// surface a calm "Nothing scheduled." state and wait for a scheduling
+// plugin to write proper overlays. Drop-in replacement when that lands:
+// derive `CalEvent[]` from overlays where `kind === "scheduled"` and
+// `payload = { date, hour, dur }`.
 // ============================================================
-
-interface ScheduleSlot { d: number; h: number; dur: number; }
-
-const SURF_SCHEDULE: Record<string, ScheduleSlot[]> = {
-  'w-001': [{ d: 0, h: 9,  dur: 2 }, { d: 1, h: 14, dur: 1 }, { d: 3, h: 13, dur: 2 }],
-  'w-010': [{ d: 0, h: 11, dur: 1 }, { d: 2, h: 10, dur: 1 }],
-  'w-011': [{ d: 0, h: 14, dur: 1 }],
-  'w-020': [{ d: 0, h: 15, dur: 3 }, { d: 4, h: 9,  dur: 2 }],
-  'w-021': [{ d: 0, h: 16, dur: 1 }],
-  'w-030': [{ d: 1, h: 10, dur: 2 }, { d: 4, h: 11, dur: 2 }],
-  'w-031': [{ d: 2, h: 14, dur: 2 }],
-  'w-012': [{ d: 3, h: 11, dur: 3 }, { d: 6, h: 10, dur: 2 }],
-  'w-013': [{ d: -2, h: 15, dur: 1 }],
-};
 
 const SHORT_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
@@ -61,15 +55,6 @@ const fmtHour = (h: number) => {
   const hh = (h + 11) % 12 + 1;
   return hh + p;
 };
-const fmtClock = (d: Date) =>
-  d.toLocaleTimeString('en-US', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-const fmtLogin = (d: Date) =>
-  d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
-  ' ' +
-  fmtClock(d);
-
 interface CalEvent { wave: Wave; date: Date; h: number; dur: number; }
 
 // ============================================================
@@ -82,10 +67,17 @@ export function TodayPage({
   waves,
   coves,
   onGo,
+  todayTerminalId,
+  todayError,
+  onResetTodayTerminal,
 }: {
   waves: Wave[];
   coves: Cove[];
   onGo: (r: Route) => void;
+  /** When defined, the home panel hosts a live `<XtermView>` for this id. */
+  todayTerminalId?: string | null;
+  todayError?: Error | null;
+  onResetTodayTerminal?: () => void;
 }) {
   const today0 = useMemo(() => {
     const t = new Date();
@@ -93,21 +85,20 @@ export function TodayPage({
     return t;
   }, []);
 
-  const events = useMemo<CalEvent[]>(() => {
-    const arr: CalEvent[] = [];
-    for (const w of waves) {
-      for (const slot of SURF_SCHEDULE[w.id] || []) {
-        arr.push({ wave: w, date: addDays(today0, slot.d), h: slot.h, dur: slot.dur });
-      }
-    }
-    return arr;
-  }, [waves, today0]);
+  // No scheduling plugin yet — the calendar renders its shell with an
+  // empty list. When a plugin defines a `scheduled` overlay this is the
+  // single line that should fold it in.
+  const events = useMemo<CalEvent[]>(() => [], []);
 
   return (
     <div className="surf">
       <section className="surf-main">
         <SurfClock waves={waves} />
-        <SurfTerminal />
+        <TodayTerminalPanel
+          terminalId={todayTerminalId ?? null}
+          error={todayError ?? null}
+          onReset={onResetTodayTerminal}
+        />
       </section>
       <aside className="surf-rail">
         <CalendarCard
@@ -118,6 +109,90 @@ export function TodayPage({
           onGo={onGo}
         />
       </aside>
+    </div>
+  );
+}
+
+// ---------------- TodayTerminalPanel — the real default PTY on Today ----------------
+//
+// Replaces the original mockup's static `SurfTerminal` with an actual live
+// shell. The terminal binds to a single per-browser "Scratch / Today"
+// card (resolved by `useTodayTerminal` upstream and passed in as
+// `terminalId`). While the resolver runs we show a calm "Booting…" line.
+//
+// `onReset` lets the upstream wipe the cached binding (e.g. if a future
+// "kill" affordance lands), forcing a fresh bootstrap on next render.
+
+function TodayTerminalPanel({
+  terminalId,
+  error,
+  onReset,
+}: {
+  terminalId: string | null;
+  error: Error | null;
+  onReset?: () => void;
+}) {
+  return (
+    <div className="surf-term">
+      <div className="surf-term-head">
+        <span className="term-dot" />
+        <span className="term-dot b" />
+        <span className="term-dot c" />
+        <span className="term-title">~ / neige · today</span>
+        {onReset && (
+          <button
+            className="surf-term-host"
+            onClick={onReset}
+            title="Forget the cached Today terminal and bootstrap a fresh one"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              font: 'inherit',
+              color: 'inherit',
+              padding: 0,
+            }}
+          >
+            reset ↻
+          </button>
+        )}
+      </div>
+      <div className="surf-term-body" style={{ padding: 0 }}>
+        {error ? (
+          <div className="surf-term-line" style={{ padding: 16, color: 'var(--warn, #c00)' }}>
+            kernel error: {error.message}
+            {onReset && (
+              <>
+                {' · '}
+                <button
+                  onClick={onReset}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'inherit', textDecoration: 'underline', cursor: 'pointer',
+                    font: 'inherit',
+                  }}
+                >
+                  retry
+                </button>
+              </>
+            )}
+          </div>
+        ) : terminalId ? (
+          <LiveTerminalSlot terminalId={terminalId} />
+        ) : (
+          <div className="surf-term-line dim" style={{ padding: 16 }}>
+            booting today's terminal…
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
+  return (
+    <div style={{ minHeight: 360 }}>
+      <XtermView terminalId={terminalId} />
     </div>
   );
 }
@@ -169,59 +244,6 @@ function SurfClock({ waves }: { waves: Wave[] }) {
         </span>
       </div>
     </header>
-  );
-}
-
-// ---------------- Terminal (plain) ----------------
-
-function SurfTerminal() {
-  const loginLine = useMemo(() => {
-    const now = new Date();
-    const start = new Date(now.getTime() - (18 * 60 + 47) * 1000);
-    return 'Last login: ' + fmtLogin(start) + ' on ttys001';
-  }, []);
-
-  return (
-    <div className="surf-term">
-      <div className="surf-term-head">
-        <span className="term-dot" />
-        <span className="term-dot b" />
-        <span className="term-dot c" />
-        <span className="term-title">~ / neige · today</span>
-        <span className="surf-term-host">yuki@neige</span>
-      </div>
-      <div className="surf-term-body">
-        <div className="surf-term-line dim">{loginLine}</div>
-        <div className="surf-term-line">
-          <strong>neige · today</strong>  v0.4.2
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-term-line dim">launch a TUI on a scheduled wave:</div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige claude</span>  <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">claude code</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige cursor</span>  <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">cursor agent</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige aider</span>   <span className="surf-arg">&lt;wave&gt;</span>      <span className="dim">aider</span>
-        </div>
-        <div className="surf-term-line">
-          <span className="surf-cmd">neige run </span>    <span className="surf-arg">--now</span>        <span className="dim">pick up today's next block</span>
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-term-line dim">
-          active sessions: <span className="surf-live">2</span>  ·  atlas, reef
-        </div>
-        <div className="surf-term-gap" />
-        <div className="surf-prompt">
-          <span className="surf-host">yuki@neige</span>
-          <span className="surf-tilde">~</span>
-          <span className="surf-ps">$</span>
-          <span className="surf-cursor" />
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -505,13 +527,44 @@ export function CovePage({
   cove,
   waves,
   onGo,
+  onCreateWave,
+  onRenameCove,
+  onDeleteCove,
+  onDeleteWave,
 }: {
   cove: Cove;
   waves: Wave[];
   onGo: (r: Route) => void;
+  /** Called when the user submits the inline `+ New wave` compose bar. */
+  onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
+  /** Called from the inline rename input on the header. */
+  onRenameCove?: (coveId: string, name: string) => void | Promise<void>;
+  /** Called from the × button on the header. CovePage shows its own
+   *  `window.confirm`, so callers don't need to double-prompt. */
+  onDeleteCove?: (coveId: string) => void | Promise<void>;
+  /** Called from a per-row × on hover. Same confirm-then-delete pattern. */
+  onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
+  const deleteWaveWithConfirm = (w: Wave) => {
+    if (!onDeleteWave) return;
+    const sure = window.confirm(
+      `Delete wave "${w.title}"? Its cards (including any terminals) go too. This cannot be undone.`,
+    );
+    if (!sure) return;
+    void onDeleteWave(w.id);
+  };
   const running = waves.filter((w) => w.status === 'running');
   const waiting = waves.filter((w) => w.status === 'waiting');
+  const idle    = waves.filter((w) => w.status === 'idle');
+  // Derived eyebrow — the kernel has no `subtitle` field, so we compose
+  // one from wave counts. Empty when the cove is empty, in which case
+  // the eyebrow drops to just the color chip.
+  const eyebrow = (() => {
+    if (waves.length === 0) return '';
+    const noun = waves.length === 1 ? 'wave' : 'waves';
+    if (running.length === 0) return `${waves.length} ${noun}`;
+    return `${waves.length} ${noun} · ${running.length} running`;
+  })();
 
   return (
     <div className="col wide">
@@ -531,18 +584,35 @@ export function CovePage({
             background: cove.color, display: 'inline-block',
           }}
         />
-        {cove.subtitle}
+        {eyebrow}
       </div>
-      <h1 className="h-display">{cove.name}.</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {onRenameCove ? (
+          <EditableTitle
+            value={cove.name}
+            ariaLabel="Cove name"
+            onSave={(name) => onRenameCove(cove.id, name)}
+          />
+        ) : (
+          <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{cove.name}.</h1>
+        )}
+        {onDeleteCove && (
+          <DeleteButton
+            label={`Delete cove "${cove.name}"`}
+            confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
+            onDelete={() => onDeleteCove(cove.id)}
+          />
+        )}
+      </div>
 
       {waves.length === 0 && (
         <div
           style={{
-            padding: '48px 0', color: 'var(--text-3)',
+            padding: '32px 0 8px', color: 'var(--text-3)',
             fontSize: 15, textAlign: 'center',
           }}
         >
-          This Cove is quiet. Start a Wave from the compose bar below.
+          This Cove is quiet. Start a Wave below.
         </div>
       )}
 
@@ -555,6 +625,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
             />
           ))}
         </Section>
@@ -568,10 +639,271 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
             />
           ))}
         </Section>
       )}
+      {idle.length > 0 && (
+        <Section label="Idle">
+          {idle.map((w) => (
+            <WaveRow
+              key={w.id}
+              wave={w}
+              cove={cove}
+              showCove={false}
+              onClick={() => onGo({ name: 'wave', id: w.id })}
+              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
+            />
+          ))}
+        </Section>
+      )}
+
+      {onCreateWave && (
+        <NewWaveCTA
+          onSubmit={(title) => onCreateWave(cove.id, title)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------- Header actions: edit + delete ----------------
+//
+// Two reusable single-purpose buttons that sit next to a page title.
+// Single-action affordances beat a kebab menu here — the icon itself
+// says what'll happen, and there's no menu to open and close.
+
+function IconButton({
+  glyph,
+  label,
+  tone = 'neutral',
+  onClick,
+  fontSize = 14,
+}: {
+  glyph: React.ReactNode;
+  label: string;
+  /** `neutral` greys-up on hover; `danger` shifts to warn-red. */
+  tone?: 'neutral' | 'danger';
+  onClick: () => void;
+  fontSize?: number;
+}) {
+  const [hover, setHover] = useState(false);
+  const dangerStyle = {
+    background: hover ? 'var(--warn-soft)' : 'transparent',
+    color: hover ? 'var(--warn)' : 'var(--text-3)',
+  };
+  const neutralStyle = {
+    background: hover ? 'oklch(0% 0 0 / 0.04)' : 'transparent',
+    color: hover ? 'var(--text-2)' : 'var(--text-3)',
+  };
+  const tonal = tone === 'danger' ? dangerStyle : neutralStyle;
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={label}
+      aria-label={label}
+      style={{
+        width: 26, height: 26,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: 'none', borderRadius: 6,
+        font: 'inherit', fontSize, lineHeight: 1, cursor: 'pointer',
+        transition: 'color 0.1s, background 0.1s',
+        ...tonal,
+      }}
+    >
+      {glyph}
+    </button>
+  );
+}
+
+/**
+ * Title with an inline-edit affordance.
+ *
+ * The pencil button switches the h1 to a same-sized input. Enter / blur
+ * save (no-op if unchanged or empty); Escape cancels. The input inherits
+ * the h1's visual styling so editing feels like the title sliding open,
+ * not a popover. The trailing period in the design (`cove.name + '.'`)
+ * is rendered by the parent, not stored — the editor edits the raw name.
+ */
+function EditableTitle({
+  value,
+  onSave,
+  ariaLabel,
+}: {
+  value: string;
+  onSave: (next: string) => void | Promise<void>;
+  ariaLabel: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // External value changes (e.g. WS event from another tab) should not
+  // clobber an in-flight edit; only sync `draft` when not editing.
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [editing, value]);
+
+  const enter = () => {
+    setDraft(value);
+    setEditing(true);
+    queueMicrotask(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+  const cancel = () => setEditing(false);
+  const save = async () => {
+    const trimmed = draft.trim();
+    setEditing(false);
+    if (!trimmed || trimmed === value) return;
+    await onSave(trimmed);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void save();
+          else if (e.key === 'Escape') cancel();
+        }}
+        onBlur={() => void save()}
+        aria-label={ariaLabel}
+        className="h-display"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          padding: 0,
+          margin: 0,
+        }}
+      />
+    );
+  }
+  // Click-to-edit: no pencil affordance — the title itself is the
+  // affordance. `cursor: text` is the hint; click → enter edit mode.
+  return (
+    <h1
+      className="h-display"
+      style={{ flex: 1, margin: 0, cursor: 'text' }}
+      onClick={enter}
+      title="Click to rename"
+    >
+      {value}.
+    </h1>
+  );
+}
+
+function DeleteButton({
+  label,
+  confirmMessage,
+  onDelete,
+}: {
+  label: string;
+  confirmMessage: string;
+  onDelete: () => void | Promise<void>;
+}) {
+  return (
+    <IconButton
+      glyph="×"
+      label={label}
+      tone="danger"
+      fontSize={18}
+      onClick={async () => {
+        if (!window.confirm(confirmMessage)) return;
+        await onDelete();
+      }}
+    />
+  );
+}
+
+// ---------------- NewWaveCTA — CovePage's compose-bar ----------------
+//
+// Bottom-of-page ghost button by default; expands inline to a single-line
+// text input on click. Visually rhymes with WavePage's `+ Add panel` so
+// the "compose at the bottom" idiom is consistent across pages.
+
+function NewWaveCTA({
+  onSubmit,
+}: {
+  onSubmit: (title: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const openForm = () => {
+    setOpen(true);
+    queueMicrotask(() => inputRef.current?.focus());
+  };
+  const close = () => {
+    setOpen(false);
+    setTitle('');
+  };
+  const submit = async () => {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      close();
+      return;
+    }
+    await onSubmit(trimmed);
+    close();
+  };
+
+  if (!open) {
+    return (
+      <button
+        className="add-panel"
+        onClick={openForm}
+        title="New wave"
+        style={{ marginTop: 16 }}
+      >
+        + New wave
+      </button>
+    );
+  }
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: '10px 14px',
+        border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
+        borderRadius: 8,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      <span style={{ color: 'var(--text-3)', flexShrink: 0 }}>›</span>
+      <input
+        ref={inputRef}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit();
+          else if (e.key === 'Escape') close();
+        }}
+        onBlur={() => void submit()}
+        placeholder="Wave title…"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          font: 'inherit',
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          color: 'var(--text)',
+        }}
+      />
+      <span style={{ color: 'var(--text-3)', fontSize: 12 }}>↵</span>
     </div>
   );
 }
@@ -588,6 +920,8 @@ export function WavePage({
   onAddCard,
   onRemoveCard,
   onMoveCard,
+  onRenameWave,
+  onDeleteWave,
 }: {
   wave: Wave;
   cove: Cove;
@@ -595,13 +929,43 @@ export function WavePage({
   onAddCard: (waveId: string, type: AddPanelKind) => void;
   onRemoveCard: (waveId: string, idx: number) => void;
   onMoveCard: (waveId: string, from: number, to: number) => void;
+  onRenameWave?: (waveId: string, title: string) => void | Promise<void>;
+  onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
   const pct = Math.round(wave.progress * 100);
   const cards = wave.cards || [];
-  const hasPlan = cards.some((c) => c.type === 'plan');
 
   const [dragSrc, setDragSrc] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
+
+  // Inline rename state. The title sits inside the breadcrumb so we
+  // swap a same-class input in place of the span when editing — no
+  // layout shift, the rest of the header stays put.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(wave.title);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!editingTitle) setDraftTitle(wave.title);
+  }, [editingTitle, wave.title]);
+  const startRename = () => {
+    if (!onRenameWave) return;
+    setDraftTitle(wave.title);
+    setEditingTitle(true);
+    queueMicrotask(() => {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    });
+  };
+  const commitRename = async () => {
+    const trimmed = draftTitle.trim();
+    setEditingTitle(false);
+    if (!trimmed || trimmed === wave.title || !onRenameWave) return;
+    await onRenameWave(wave.id, trimmed);
+  };
+
+  // Show eta pill only when there's text to show.
+  const showEtaPill = !!wave.eta;
+  const showPct = wave.progress > 0 && wave.progress < 1.0;
 
   return (
     <div className="workbench">
@@ -619,21 +983,60 @@ export function WavePage({
             {cove.name}
           </a>
           <span className="wave-sep">·</span>
-          <span className="wave-title">{wave.title}</span>
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              className="wave-title"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitRename();
+                else if (e.key === 'Escape') setEditingTitle(false);
+              }}
+              onBlur={() => void commitRename()}
+              aria-label="Wave title"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                font: 'inherit',
+                padding: 0,
+                margin: 0,
+                minWidth: 120,
+              }}
+            />
+          ) : (
+            <span
+              className="wave-title"
+              onClick={onRenameWave ? startRename : undefined}
+              style={onRenameWave ? { cursor: 'text' } : undefined}
+              title={onRenameWave ? 'Click to rename' : undefined}
+            >
+              {wave.title}
+            </span>
+          )}
         </span>
         <span className="wave-meta">
-          {wave.status === 'running' ? (
+          {wave.status === 'running' && (
             <span className="status-pill running">
               <span className="status-pill-dot live-dot" />
-              {wave.eta}
+              {wave.eta || 'running'}
             </span>
-          ) : (
+          )}
+          {wave.status === 'waiting' && showEtaPill && (
             <span className="status-pill waiting">
               <span className="status-pill-dot warn" />
               {wave.eta}
             </span>
           )}
-          {wave.progress < 1.0 && <span className="wave-percent num">{pct}%</span>}
+          {showPct && <span className="wave-percent num">{pct}%</span>}
+          {onDeleteWave && (
+            <DeleteButton
+              label={`Delete wave "${wave.title}"`}
+              confirmMessage={`Delete wave "${wave.title}"? Its cards (including any terminals) go too. This cannot be undone.`}
+              onDelete={() => onDeleteWave(wave.id)}
+            />
+          )}
         </span>
       </header>
 
@@ -705,7 +1108,7 @@ export function WavePage({
             </div>
           );
         })}
-        <AddPanel onAdd={(type) => onAddCard(wave.id, type)} hasPlan={hasPlan} />
+        <AddPanel onAdd={(type) => onAddCard(wave.id, type)} />
       </main>
     </div>
   );
